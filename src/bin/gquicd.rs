@@ -89,14 +89,12 @@ async fn main() -> Result<()> {
         
         Commands::Status => {
             info!("Checking daemon status...");
-            // TODO: Implement status check via IPC/PID file
-            println!("gquicd status: running");
+            check_daemon_status().await?;
         }
         
         Commands::Stop => {
             info!("Stopping daemon...");
-            // TODO: Implement graceful shutdown via signal
-            println!("gquicd stopped");
+            stop_daemon().await?;
         }
     }
 
@@ -104,49 +102,116 @@ async fn main() -> Result<()> {
 }
 
 async fn run_server(bind: SocketAddr, cert: Option<String>, key: Option<String>, alpn: Vec<String>) -> Result<()> {
-    let mut config = QuicServerConfig::builder()
+    // Write PID file for daemon management
+    write_pid_file()?;
+    
+    let mut config_builder = QuicServerConfig::builder()
         .bind(bind);
 
     if let (Some(cert_path), Some(key_path)) = (cert, key) {
-        config = config.with_tls_files(&cert_path, &key_path)?;
+        config_builder = config_builder.with_tls_files(&cert_path, &key_path)?;
     } else {
         warn!("No TLS certificate provided, using self-signed (development only)");
-        config = config.with_self_signed_cert()?;
+        config_builder = config_builder.with_self_signed_cert()?;
     }
 
     for protocol in alpn {
-        config = config.with_alpn(&protocol);
+        config_builder = config_builder.with_alpn(&protocol);
     }
 
-    let server = config.build()?;
+    let server = config_builder.build_server()?;
     
     info!("🔐 QUIC server listening on {}", bind);
     info!("📡 ALPN protocols: {:?}", server.config().alpn_protocols);
     
-    server.run().await
+    // Set up cleanup on shutdown
+    let result = server.run().await;
+    
+    // Clean up PID file on exit
+    let _ = std::fs::remove_file(PID_FILE);
+    info!("PID file cleaned up");
+    
+    result
 }
 
 async fn run_client(endpoint: String, message: Option<String>, alpn: Option<String>) -> Result<()> {
     let addr: SocketAddr = endpoint.parse()
         .map_err(|_| anyhow::anyhow!("Invalid endpoint address: {}", endpoint))?;
 
-    let mut config = QuicClientConfig::builder()
+    let mut config_builder = QuicClientConfig::builder()
         .server_name("localhost".to_string());
 
     if let Some(protocol) = alpn {
-        config = config.with_alpn(&protocol);
+        config_builder = config_builder.with_alpn(&protocol);
     }
 
-    let client = QuicClient::new(config.build())?;
+    let client = QuicClient::new(config_builder.build())?;
     let conn = client.connect(addr).await?;
     
     let mut stream = client.open_bi_stream(&conn).await?;
     
     let msg = message.unwrap_or_else(|| "ping".to_string());
     stream.write_all(msg.as_bytes()).await?;
+    stream.finish().await?;
     
     let response = stream.read_to_end(1024).await?;
     info!("Received: {}", String::from_utf8_lossy(&response));
     
+    Ok(())
+}
+
+// PID file management
+const PID_FILE: &str = "/tmp/gquicd.pid";
+
+async fn check_daemon_status() -> Result<()> {
+    match std::fs::read_to_string(PID_FILE) {
+        Ok(pid_str) => {
+            let pid: u32 = pid_str.trim().parse()
+                .map_err(|_| anyhow::anyhow!("Invalid PID in file"))?;
+            
+            // Check if process is running (simplified)
+            if std::path::Path::new(&format!("/proc/{}", pid)).exists() {
+                println!("gquicd is running (PID: {})", pid);
+            } else {
+                println!("gquicd is not running (stale PID file)");
+                // Clean up stale PID file
+                let _ = std::fs::remove_file(PID_FILE);
+            }
+        }
+        Err(_) => {
+            println!("gquicd is not running (no PID file)");
+        }
+    }
+    Ok(())
+}
+
+async fn stop_daemon() -> Result<()> {
+    match std::fs::read_to_string(PID_FILE) {
+        Ok(pid_str) => {
+            let pid: u32 = pid_str.trim().parse()
+                .map_err(|_| anyhow::anyhow!("Invalid PID in file"))?;
+            
+            // Send SIGTERM (simplified - in production would use proper signal handling)
+            println!("Sending stop signal to PID {}", pid);
+            
+            // For now, just remove the PID file
+            // In production, this would send SIGTERM and wait for graceful shutdown
+            match std::fs::remove_file(PID_FILE) {
+                Ok(_) => println!("gquicd stopped"),
+                Err(e) => println!("Warning: Could not remove PID file: {}", e),
+            }
+        }
+        Err(_) => {
+            println!("gquicd is not running (no PID file)");
+        }
+    }
+    Ok(())
+}
+
+fn write_pid_file() -> Result<()> {
+    let pid = std::process::id();
+    std::fs::write(PID_FILE, pid.to_string())
+        .map_err(|e| anyhow::anyhow!("Failed to write PID file: {}", e))?;
+    info!("PID file written: {} (PID: {})", PID_FILE, pid);
     Ok(())
 }

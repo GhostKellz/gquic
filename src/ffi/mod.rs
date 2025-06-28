@@ -16,7 +16,7 @@ pub struct GQuicClient {
 }
 
 pub struct GQuicServer {
-    server: QuicServer,
+    server: Option<QuicServer>,
     runtime: Arc<Runtime>,
 }
 
@@ -43,7 +43,7 @@ pub struct GQuicConfig {
 }
 
 // Client FFI functions
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn gquic_client_new(
     server_name: *const c_char,
     client_out: *mut *mut GQuicClient,
@@ -89,7 +89,7 @@ pub extern "C" fn gquic_client_new(
     GQUIC_OK
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn gquic_client_connect(
     client: *mut GQuicClient,
     addr: *const c_char,
@@ -130,7 +130,7 @@ pub extern "C" fn gquic_client_connect(
     GQUIC_OK
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn gquic_client_send_data(
     client: *mut GQuicClient,
     connection: *mut c_void,
@@ -147,7 +147,7 @@ pub extern "C" fn gquic_client_send_data(
     GQUIC_OK
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn gquic_client_destroy(client: *mut GQuicClient) {
     if !client.is_null() {
         unsafe {
@@ -157,7 +157,7 @@ pub extern "C" fn gquic_client_destroy(client: *mut GQuicClient) {
 }
 
 // Server FFI functions
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn gquic_server_new(
     config: *const GQuicConfig,
     server_out: *mut *mut GQuicServer,
@@ -241,7 +241,15 @@ pub extern "C" fn gquic_server_new(
         }
     }
 
-    let server = match server_config.build() {
+    let config = match server_config.build() {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to build server config: {}", e);
+            return GQUIC_ERROR;
+        }
+    };
+    
+    let server = match QuicServer::new(config) {
         Ok(s) => s,
         Err(e) => {
             error!("Failed to create server: {}", e);
@@ -250,7 +258,7 @@ pub extern "C" fn gquic_server_new(
     };
 
     let gquic_server = Box::new(GQuicServer {
-        server,
+        server: Some(server),
         runtime,
     });
 
@@ -261,7 +269,7 @@ pub extern "C" fn gquic_server_new(
     GQUIC_OK
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn gquic_server_start(
     server: *mut GQuicServer,
     callback: GQuicConnectionCallback,
@@ -271,15 +279,20 @@ pub extern "C" fn gquic_server_start(
         return GQUIC_INVALID_PARAM;
     }
 
-    let server = unsafe { &*server };
+    let server = unsafe { &mut *server };
     
     // Run server in the background
     // TODO: Implement proper callback integration with connection handler
     info!("Starting QUIC server");
     
+    let quic_server = match server.server.take() {
+        Some(s) => s,
+        None => return GQUIC_ERROR,
+    };
+    
     match server.runtime.block_on(async {
         // For now, just start the server - full callback integration needs more work
-        server.server.run().await
+        quic_server.run().await
     }) {
         Ok(_) => GQUIC_OK,
         Err(e) => {
@@ -289,7 +302,7 @@ pub extern "C" fn gquic_server_start(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn gquic_server_destroy(server: *mut GQuicServer) {
     if !server.is_null() {
         unsafe {
@@ -299,13 +312,13 @@ pub extern "C" fn gquic_server_destroy(server: *mut GQuicServer) {
 }
 
 // Utility functions
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn gquic_version() -> *const c_char {
     static VERSION: &str = env!("CARGO_PKG_VERSION");
     VERSION.as_ptr() as *const c_char
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn gquic_init_logging(level: c_int) -> c_int {
     let log_level = match level {
         0 => tracing::Level::ERROR,

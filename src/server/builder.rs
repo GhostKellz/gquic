@@ -54,12 +54,12 @@ impl QuicServerBuilder {
     }
 
     pub fn max_idle_timeout(mut self, timeout: Duration) -> Self {
-        self.config_builder = self.config_builder.max_idle_timeout(timeout);
+        self.config_builder = self.config_builder.max_idle_timeout(timeout.as_millis() as u64);
         self
     }
 
     pub fn keep_alive_interval(mut self, interval: Duration) -> Self {
-        self.config_builder = self.config_builder.keep_alive_interval(interval);
+        self.config_builder = self.config_builder.keep_alive_interval(interval.as_millis() as u64);
         self
     }
 

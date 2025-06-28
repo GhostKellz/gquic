@@ -1,7 +1,5 @@
 use super::{QuicClient, QuicClientConfig};
 use anyhow::Result;
-use rustls::RootCertStore;
-use std::sync::Arc;
 
 pub struct QuicClientBuilder {
     config: QuicClientConfig,
@@ -21,11 +19,6 @@ impl QuicClientBuilder {
 
     pub fn with_alpn(mut self, protocol: &str) -> Self {
         self.config.alpn_protocols.push(protocol.as_bytes().to_vec());
-        self
-    }
-
-    pub fn with_root_certs(mut self, certs: Arc<RootCertStore>) -> Self {
-        self.config.root_certs = certs;
         self
     }
 
@@ -49,12 +42,23 @@ impl QuicClientBuilder {
         self
     }
 
+    pub fn enable_0rtt(mut self, enable: bool) -> Self {
+        self.config.enable_0rtt = enable;
+        self
+    }
+
+    pub fn enable_migration(mut self, enable: bool) -> Self {
+        self.config.enable_migration = enable;
+        self
+    }
+
     pub fn build(self) -> QuicClientConfig {
         self.config
     }
 
     pub fn build_client(self) -> Result<QuicClient> {
-        QuicClient::new(self.config)
+        let config = self.build();
+        QuicClient::new(config)
     }
 }
 
