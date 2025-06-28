@@ -37,7 +37,7 @@ clap = { version = "4.0", features = ["derive"] }
 config = "0.14"
 
 # GhostChain ecosystem dependencies 
-gcrypt = { path = "../gcrypt", optional = true }
+gcrypt = { git = "https://github.com/ghostkellz/gcrypt", features = ["std", "rand_core"], optional = true }
 # webpki-roots = "0.26"      # Will be replaced with gcrypt
 # rustls-pemfile = "2.0"     # Will be replaced with gcrypt
 rcgen = "0.12"
