@@ -5,8 +5,10 @@ use std::sync::Arc;
 pub mod gcrypt_backend;
 
 pub mod rustls_backend;
+pub mod quic_crypto;
 
 pub use rustls_backend::*;
+pub use quic_crypto::*;
 
 #[cfg(feature = "gcrypt-integration")]
 pub use gcrypt_backend::*;

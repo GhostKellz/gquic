@@ -1,5 +1,6 @@
 use bytes::{Bytes, BytesMut, Buf, BufMut};
 use crate::quic::stream::StreamId;
+use crate::quic::connection::ConnectionId;
 
 /// QUIC frame types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,7 +114,7 @@ pub enum Frame {
     NewConnectionId {
         sequence_number: u64,
         retire_prior_to: u64,
-        connection_id: Bytes,
+        connection_id: ConnectionId,
         stateless_reset_token: [u8; 16],
     },
     RetireConnectionId {
@@ -131,6 +132,13 @@ pub enum Frame {
         reason_phrase: String,
     },
     HandshakeDone,
+    Datagram {
+        data: Bytes,
+    },
+    ApplicationClose {
+        error_code: u64,
+        reason_phrase: String,
+    },
 }
 
 impl Frame {
@@ -289,14 +297,14 @@ fn decode_varint(data: &[u8]) -> Result<(u64, usize), super::error::QuicError> {
         0 => Ok((first_byte as u64, 1)),
         1 => {
             if data.len() < 2 {
-                return Err(super::error::QuicError::Protocol("Insufficient varint data".to_string()));
+                return Err(super::error::QuicError::Protocol(super::error::ProtocolError::InvalidFrameFormat("Insufficient varint data".to_string())));
             }
             let value = ((first_byte & 0x3f) as u64) << 8 | data[1] as u64;
             Ok((value, 2))
         }
         2 => {
             if data.len() < 4 {
-                return Err(super::error::QuicError::Protocol("Insufficient varint data".to_string()));
+                return Err(super::error::QuicError::Protocol(super::error::ProtocolError::InvalidFrameFormat("Insufficient varint data".to_string())));
             }
             let value = ((first_byte & 0x3f) as u64) << 24
                 | (data[1] as u64) << 16
@@ -306,7 +314,7 @@ fn decode_varint(data: &[u8]) -> Result<(u64, usize), super::error::QuicError> {
         }
         3 => {
             if data.len() < 8 {
-                return Err(super::error::QuicError::Protocol("Insufficient varint data".to_string()));
+                return Err(super::error::QuicError::Protocol(super::error::ProtocolError::InvalidFrameFormat("Insufficient varint data".to_string())));
             }
             let value = ((first_byte & 0x3f) as u64) << 56
                 | (data[1] as u64) << 48

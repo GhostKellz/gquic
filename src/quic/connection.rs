@@ -13,9 +13,12 @@ use super::frame::Frame;
 use super::packet::{Packet, PacketHeader, PacketNumber, PacketType};
 use super::stream::{BiStream, BiStreamHandle, StreamId, UniStream, UniStreamHandle};
 use super::error::{QuicError, ConnectionError, Result};
+use crate::crypto::{QuicCrypto, PacketKeys, EncryptionLevel, KeyPhase, InitialSecrets};
+
+use serde::{Serialize, Deserialize};
 
 /// QUIC connection identifier
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConnectionId(Bytes);
 
 impl ConnectionId {
@@ -24,11 +27,15 @@ impl ConnectionId {
         Self(Bytes::copy_from_slice(uuid.as_bytes()))
     }
     
-    pub fn from_bytes(bytes: Bytes) -> Self {
-        Self(bytes)
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Self(Bytes::copy_from_slice(bytes))
     }
     
-    pub fn as_bytes(&self) -> &Bytes {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.0.to_vec()
+    }
+    
+    pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
     
@@ -95,6 +102,11 @@ struct ConnectionData {
     uni_streams: HashMap<StreamId, UniStreamHandle>,
     last_activity: Instant,
     idle_timeout: Duration,
+    // Crypto state
+    crypto: Option<Arc<QuicCrypto>>,
+    keys: HashMap<EncryptionLevel, PacketKeys>,
+    key_phase: KeyPhase,
+    is_client: bool,
 }
 
 impl ConnectionData {
@@ -116,6 +128,10 @@ impl ConnectionData {
             uni_streams: HashMap::new(),
             last_activity: Instant::now(),
             idle_timeout: Duration::from_secs(30),
+            crypto: None,
+            keys: HashMap::new(),
+            key_phase: KeyPhase::Zero,
+            is_client,
         }
     }
 }
@@ -167,6 +183,41 @@ impl Connection {
         self.data.read().await.stats.clone()
     }
     
+    /// Initialize crypto for the connection
+    pub async fn initialize_crypto(&self, crypto: Arc<QuicCrypto>) -> Result<()> {
+        let mut data = self.data.write().await;
+        
+        // Derive initial secrets
+        let connection_id_bytes = data.connection_id.as_bytes();
+        let initial_secrets = crypto.derive_initial_secrets(connection_id_bytes)?;
+        
+        // Derive packet keys for client and server
+        let client_keys = crypto.derive_packet_keys(&initial_secrets.client)?;
+        let server_keys = crypto.derive_packet_keys(&initial_secrets.server)?;
+        
+        // Store keys based on perspective
+        if data.is_client {
+            data.keys.insert(EncryptionLevel::Initial, client_keys);
+        } else {
+            data.keys.insert(EncryptionLevel::Initial, server_keys);
+        }
+        
+        data.crypto = Some(crypto);
+        
+        info!("Crypto initialized for connection {}", data.connection_id);
+        Ok(())
+    }
+    
+    /// Get encryption level for current connection state
+    fn encryption_level(&self, state: ConnectionState) -> EncryptionLevel {
+        match state {
+            ConnectionState::Initial => EncryptionLevel::Initial,
+            ConnectionState::Handshaking => EncryptionLevel::Handshake,
+            ConnectionState::Connected => EncryptionLevel::OneRtt,
+            _ => EncryptionLevel::Initial,
+        }
+    }
+    
     /// Open a new bidirectional stream
     pub async fn open_bi(&self) -> Result<BiStream> {
         let mut data = self.data.write().await;
@@ -206,10 +257,26 @@ impl Connection {
     }
     
     /// Accept an incoming bidirectional stream
-    pub async fn accept_bi(&self) -> Result<Option<BiStream>> {
-        // This would be implemented to accept incoming streams
-        // For now, return None to indicate no pending streams
-        Ok(None)
+    pub async fn accept_bi(&self) -> Result<(BiStream, BiStream)> {
+        let mut data = self.data.write().await;
+        
+        if data.state != ConnectionState::Connected {
+            return Err(QuicError::Connection(ConnectionError::Closed));
+        }
+        
+        // For demonstration, create a pair of bidirectional streams
+        let stream_id = data.next_stream_id;
+        data.next_stream_id = StreamId::new(stream_id.value() + 4);
+        data.stats.streams_opened += 1;
+        
+        let (send_stream, send_handle) = BiStream::new(stream_id);
+        let (recv_stream, recv_handle) = BiStream::new(StreamId::new(stream_id.value() + 1));
+        
+        data.bi_streams.insert(stream_id, send_handle);
+        data.bi_streams.insert(StreamId::new(stream_id.value() + 1), recv_handle);
+        
+        debug!("Accepted bidirectional stream pair {}/{}", stream_id, StreamId::new(stream_id.value() + 1));
+        Ok((send_stream, recv_stream))
     }
     
     /// Accept an incoming unidirectional stream  
@@ -248,8 +315,25 @@ impl Connection {
     }
     
     /// Send a packet over the connection
-    pub(crate) async fn send_packet(&self, packet: Packet) -> Result<()> {
+    pub(crate) async fn send_packet(&self, mut packet: Packet) -> Result<()> {
         let data = self.data.read().await;
+        
+        // Encrypt packet if crypto is available
+        if let Some(crypto) = &data.crypto {
+            let encryption_level = self.encryption_level(data.state);
+            
+            if let Some(keys) = data.keys.get(&encryption_level) {
+                let header_bytes = packet.header.encode();
+                let encrypted_payload = crypto.encrypt_packet(
+                    keys,
+                    packet.header.packet_number.value(),
+                    &header_bytes,
+                    &packet.payload,
+                )?;
+                packet.payload = encrypted_payload.into();
+            }
+        }
+        
         let encoded = packet.encode();
         
         match self.socket.send_to(&encoded, data.remote_addr).await {
@@ -263,14 +347,31 @@ impl Connection {
             }
             Err(e) => {
                 error!("Failed to send packet: {}", e);
-                Err(QuicError::Io(e))
+                Err(QuicError::Io(e.to_string()))
             }
         }
     }
     
     /// Handle an incoming packet
-    pub(crate) async fn handle_packet(&self, packet: Packet) -> Result<()> {
+    pub(crate) async fn handle_packet(&self, mut packet: Packet) -> Result<()> {
         let mut data = self.data.write().await;
+        
+        // Decrypt packet if crypto is available
+        if let Some(crypto) = &data.crypto {
+            let encryption_level = self.encryption_level(data.state);
+            
+            if let Some(keys) = data.keys.get(&encryption_level) {
+                let header_bytes = packet.header.encode();
+                let decrypted_payload = crypto.decrypt_packet(
+                    keys,
+                    packet.header.packet_number.value(),
+                    &header_bytes,
+                    &packet.payload,
+                )?;
+                packet.payload = decrypted_payload.into();
+            }
+        }
+        
         data.stats.bytes_received += packet.payload.len() as u64;
         data.stats.packets_received += 1;
         data.last_activity = Instant::now();
@@ -280,11 +381,13 @@ impl Connection {
             PacketType::Initial => {
                 if data.state == ConnectionState::Initial {
                     data.state = ConnectionState::Handshaking;
+                    info!("Connection {} starting handshake", data.connection_id);
                 }
             }
             PacketType::Handshake => {
                 if data.state == ConnectionState::Handshaking {
                     // Handshake processing would go here
+                    debug!("Processing handshake packet for connection {}", data.connection_id);
                 }
             }
             PacketType::OneRtt => {
@@ -303,18 +406,45 @@ impl Connection {
     }
     
     /// Process frames within a packet payload
-    async fn process_frames(&self, payload: &Bytes) -> Result<()> {
-        let mut data = payload.as_ref();
+    async fn process_frames(&self, payload: &[u8]) -> Result<()> {
+        let mut data = payload;
         
         while !data.is_empty() {
-            match Frame::decode(data) {
-                Ok((frame, consumed)) => {
+            // Simplified frame processing for now
+            if data.len() < 1 {
+                break;
+            }
+            
+            let frame_type = data[0];
+            match frame_type {
+                0x00 => {
+                    // PADDING frame - skip padding bytes
+                    let mut consumed = 0;
+                    while consumed < data.len() && data[consumed] == 0x00 {
+                        consumed += 1;
+                    }
                     data = &data[consumed..];
-                    self.handle_frame(frame).await?;
                 }
-                Err(e) => {
-                    warn!("Failed to decode frame: {}", e);
+                0x01 => {
+                    // PING frame
+                    debug!("Received PING frame");
+                    data = &data[1..];
+                }
+                0x06 => {
+                    // CRYPTO frame - simplified
+                    debug!("Received CRYPTO frame");
+                    data = &[]; // Skip rest for now
+                }
+                0x1c => {
+                    // CONNECTION_CLOSE frame
+                    debug!("Received CONNECTION_CLOSE frame");
+                    let mut conn_data = self.data.write().await;
+                    conn_data.state = ConnectionState::Closed;
                     break;
+                }
+                _ => {
+                    // Unknown frame - skip rest
+                    data = &[];
                 }
             }
         }
@@ -383,7 +513,7 @@ impl Connection {
                             
                             let header = PacketHeader {
                                 packet_type: PacketType::OneRtt,
-                                connection_id: self.connection_id().await.as_bytes().clone(),
+                                connection_id: Bytes::copy_from_slice(self.connection_id().await.as_bytes()),
                                 packet_number,
                                 version: None,
                             };

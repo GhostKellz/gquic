@@ -5,9 +5,10 @@ use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::io::{AsyncRead, AsyncWrite};
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use serde::{Serialize, Deserialize};
 
 /// QUIC stream identifier
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct StreamId(u64);
 
 impl StreamId {
@@ -299,3 +300,9 @@ impl UniStreamHandle {
         send_rx.recv().await
     }
 }
+
+// Type aliases for API compatibility
+pub type StreamWriter = BiStream;
+pub type StreamReader = BiStream;
+pub type SendStream = UniStream;
+pub type RecvStream = BiStream;

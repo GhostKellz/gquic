@@ -64,7 +64,7 @@ impl Endpoint {
     /// Create a client endpoint
     pub async fn client(bind_addr: SocketAddr) -> Result<Self> {
         let socket = UdpSocket::bind(bind_addr).await
-            .map_err(|e| QuicError::Io(e))?;
+            .map_err(|e| QuicError::Io(e.to_string()))?;
         
         Self::new(socket, EndpointConfig::default(), false).await
     }
@@ -72,7 +72,7 @@ impl Endpoint {
     /// Create a server endpoint
     pub async fn server(bind_addr: SocketAddr, config: EndpointConfig) -> Result<Self> {
         let socket = UdpSocket::bind(bind_addr).await
-            .map_err(|e| QuicError::Io(e))?;
+            .map_err(|e| QuicError::Io(e.to_string()))?;
         
         Self::new(socket, config, true).await
     }
@@ -107,7 +107,7 @@ impl Endpoint {
     /// Connect to a remote endpoint (client only)
     pub async fn connect(&self, remote_addr: SocketAddr, server_name: &str) -> Result<Connection> {
         if self.is_server {
-            return Err(QuicError::Protocol("Server endpoints cannot initiate connections".to_string()));
+            return Err(QuicError::Protocol(crate::quic::error::ProtocolError::InvalidPacketFormat));
         }
         
         let connection_id = ConnectionId::new();

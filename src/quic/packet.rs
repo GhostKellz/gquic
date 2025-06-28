@@ -72,6 +72,31 @@ pub struct PacketHeader {
     pub version: Option<u32>,
 }
 
+impl PacketHeader {
+    /// Encode header to bytes
+    pub fn encode(&self) -> Bytes {
+        let mut buf = BytesMut::new();
+        
+        // First byte with packet type
+        let first_byte = self.packet_type.to_byte() | 0x80; // Set form bit
+        buf.put_u8(first_byte);
+        
+        // Version (for long header packets)
+        if let Some(version) = self.version {
+            buf.put_u32(version);
+        }
+        
+        // Connection ID length and value
+        buf.put_u8(self.connection_id.len() as u8);
+        buf.extend_from_slice(&self.connection_id);
+        
+        // Packet number (simplified - using 4 bytes)
+        buf.put_u32(self.packet_number.value() as u32);
+        
+        buf.freeze()
+    }
+}
+
 /// QUIC packet
 #[derive(Debug, Clone)]
 pub struct Packet {
@@ -113,17 +138,17 @@ impl Packet {
     /// Decode packet from bytes
     pub fn decode(mut data: Bytes) -> Result<Self, super::error::QuicError> {
         if data.is_empty() {
-            return Err(super::error::QuicError::Protocol("Empty packet".to_string()));
+            return Err(super::error::QuicError::Protocol(super::error::ProtocolError::InvalidPacketFormat));
         }
         
         let first_byte = data.get_u8();
         let packet_type = PacketType::from_byte(first_byte)
-            .ok_or_else(|| super::error::QuicError::Protocol("Invalid packet type".to_string()))?;
+            .ok_or_else(|| super::error::QuicError::Protocol(super::error::ProtocolError::InvalidPacketFormat))?;
         
         // Version (for long header packets)
         let version = if first_byte & 0x80 != 0 {
             if data.remaining() < 4 {
-                return Err(super::error::QuicError::Protocol("Insufficient data for version".to_string()));
+                return Err(super::error::QuicError::Protocol(super::error::ProtocolError::InvalidPacketFormat));
             }
             Some(data.get_u32())
         } else {
@@ -132,18 +157,18 @@ impl Packet {
         
         // Connection ID
         if data.is_empty() {
-            return Err(super::error::QuicError::Protocol("Missing connection ID length".to_string()));
+            return Err(super::error::QuicError::Protocol(super::error::ProtocolError::InvalidConnectionIdLength));
         }
         let conn_id_len = data.get_u8() as usize;
         
         if data.remaining() < conn_id_len {
-            return Err(super::error::QuicError::Protocol("Insufficient data for connection ID".to_string()));
+            return Err(super::error::QuicError::Protocol(super::error::ProtocolError::InvalidFrameFormat("Insufficient data for connection ID".to_string())));
         }
         let connection_id = data.copy_to_bytes(conn_id_len);
         
         // Packet number (simplified)
         if data.remaining() < 4 {
-            return Err(super::error::QuicError::Protocol("Insufficient data for packet number".to_string()));
+            return Err(super::error::QuicError::Protocol(super::error::ProtocolError::InvalidFrameFormat("Insufficient data for packet number".to_string())));
         }
         let packet_number = PacketNumber::new(data.get_u32() as u64);
         
