@@ -2,7 +2,7 @@
 name = "gquic"
 version = "0.1.0"
 edition = "2024"
-authors = ["GhostKellz <ghost@ghostchain.org>"]
+authors = ["Christopher Kelley <ckelley@ghostkellz.sh"]
 description = "Custom QUIC transport layer for GhostChain ecosystem"
 license = "MIT"
 repository = "https://github.com/ghostkellz/gquic"
