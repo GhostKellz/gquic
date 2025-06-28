@@ -1,0 +1,199 @@
+syntax = "proto3";
+
+package gquic.walletd;
+
+// WalletD service for GhostChain ecosystem
+service WalletService {
+    // Account operations
+    rpc CreateAccount(CreateAccountRequest) returns (CreateAccountResponse);
+    rpc GetBalance(GetBalanceRequest) returns (GetBalanceResponse);
+    rpc ListAccounts(ListAccountsRequest) returns (ListAccountsResponse);
+    
+    // Transaction operations
+    rpc SendTransaction(SendTransactionRequest) returns (SendTransactionResponse);
+    rpc GetTransaction(GetTransactionRequest) returns (GetTransactionResponse);
+    rpc GetTransactionHistory(GetTransactionHistoryRequest) returns (GetTransactionHistoryResponse);
+    
+    // Signing operations
+    rpc SignData(SignDataRequest) returns (SignDataResponse);
+    rpc VerifySignature(VerifySignatureRequest) returns (VerifySignatureResponse);
+    
+    // Identity operations
+    rpc GetIdentity(GetIdentityRequest) returns (GetIdentityResponse);
+    rpc RegisterIdentity(RegisterIdentityRequest) returns (RegisterIdentityResponse);
+}
+
+// Request/Response messages
+message CreateAccountRequest {
+    string name = 1;
+    string passphrase = 2;
+    KeyType key_type = 3;
+}
+
+message CreateAccountResponse {
+    string account_id = 1;
+    string public_key = 2;
+    string address = 3;
+}
+
+message GetBalanceRequest {
+    string account_id = 1;
+    string token_type = 2; // MANA, SPIRIT, SOUL, RLUSD
+}
+
+message GetBalanceResponse {
+    string balance = 1;
+    string token_type = 2;
+    uint64 block_height = 3;
+}
+
+message ListAccountsRequest {
+    uint32 limit = 1;
+    string cursor = 2;
+}
+
+message ListAccountsResponse {
+    repeated AccountInfo accounts = 1;
+    string next_cursor = 2;
+}
+
+message AccountInfo {
+    string account_id = 1;
+    string name = 2;
+    string address = 3;
+    string public_key = 4;
+    uint64 created_at = 5;
+}
+
+message SendTransactionRequest {
+    string from_account = 1;
+    string to_address = 2;
+    string amount = 3;
+    string token_type = 4;
+    string gas_limit = 5;
+    string gas_price = 6;
+    bytes data = 7;
+}
+
+message SendTransactionResponse {
+    string transaction_id = 1;
+    string transaction_hash = 2;
+    TransactionStatus status = 3;
+}
+
+message GetTransactionRequest {
+    string transaction_id = 1;
+}
+
+message GetTransactionResponse {
+    TransactionInfo transaction = 1;
+}
+
+message GetTransactionHistoryRequest {
+    string account_id = 1;
+    uint32 limit = 2;
+    string cursor = 3;
+    string token_type = 4;
+}
+
+message GetTransactionHistoryResponse {
+    repeated TransactionInfo transactions = 1;
+    string next_cursor = 2;
+}
+
+message TransactionInfo {
+    string transaction_id = 1;
+    string transaction_hash = 2;
+    string from_address = 3;
+    string to_address = 4;
+    string amount = 5;
+    string token_type = 6;
+    TransactionStatus status = 7;
+    uint64 timestamp = 8;
+    uint64 block_height = 9;
+    string gas_used = 10;
+    string gas_price = 11;
+}
+
+message SignDataRequest {
+    string account_id = 1;
+    bytes data = 2;
+    SignatureType signature_type = 3;
+}
+
+message SignDataResponse {
+    bytes signature = 1;
+    string public_key = 2;
+    SignatureType signature_type = 3;
+}
+
+message VerifySignatureRequest {
+    bytes data = 1;
+    bytes signature = 2;
+    string public_key = 3;
+    SignatureType signature_type = 4;
+}
+
+message VerifySignatureResponse {
+    bool valid = 1;
+}
+
+message GetIdentityRequest {
+    string identity_id = 1;
+}
+
+message GetIdentityResponse {
+    IdentityInfo identity = 1;
+}
+
+message RegisterIdentityRequest {
+    string account_id = 1;
+    string domain = 2; // e.g., "ghostkellz.zkellz"
+    map<string, string> metadata = 3;
+}
+
+message RegisterIdentityResponse {
+    string identity_id = 1;
+    string domain = 2;
+    IdentityStatus status = 3;
+}
+
+message IdentityInfo {
+    string identity_id = 1;
+    string account_id = 2;
+    string domain = 3;
+    map<string, string> metadata = 4;
+    IdentityStatus status = 5;
+    uint64 created_at = 6;
+    uint64 updated_at = 7;
+}
+
+// Enums
+enum KeyType {
+    KEY_TYPE_UNSPECIFIED = 0;
+    KEY_TYPE_ED25519 = 1;
+    KEY_TYPE_SECP256K1 = 2;
+    KEY_TYPE_SECP256R1 = 3;
+}
+
+enum SignatureType {
+    SIGNATURE_TYPE_UNSPECIFIED = 0;
+    SIGNATURE_TYPE_ED25519 = 1;
+    SIGNATURE_TYPE_ECDSA_SECP256K1 = 2;
+    SIGNATURE_TYPE_ECDSA_SECP256R1 = 3;
+}
+
+enum TransactionStatus {
+    TRANSACTION_STATUS_UNSPECIFIED = 0;
+    TRANSACTION_STATUS_PENDING = 1;
+    TRANSACTION_STATUS_CONFIRMED = 2;
+    TRANSACTION_STATUS_FAILED = 3;
+    TRANSACTION_STATUS_REJECTED = 4;
+}
+
+enum IdentityStatus {
+    IDENTITY_STATUS_UNSPECIFIED = 0;
+    IDENTITY_STATUS_PENDING = 1;
+    IDENTITY_STATUS_VERIFIED = 2;
+    IDENTITY_STATUS_REVOKED = 3;
+}

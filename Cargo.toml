@@ -1,0 +1,71 @@
+[package]
+name = "gquic"
+version = "0.1.0"
+edition = "2024"
+authors = ["GhostKellz <ghost@ghostchain.org>"]
+description = "Custom QUIC transport layer for GhostChain ecosystem"
+license = "MIT"
+repository = "https://github.com/ghostkellz/gquic"
+keywords = ["quic", "network", "blockchain", "transport", "crypto"]
+categories = ["network-programming", "cryptography"]
+
+[[bin]]
+name = "gquicd"
+path = "src/bin/gquicd.rs"
+
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bytes = "1.5"
+futures = "0.3"
+thiserror = "1.0"
+quinn = "0.11"
+rustls = "0.23"
+ring = "0.17"
+webpki = "0.22"
+tonic = "0.12"
+prost = "0.13"
+uuid = { version = "1.0", features = ["v4"] }
+parking_lot = "0.12"
+dashmap = "6.0"
+async-trait = "0.1"
+clap = { version = "4.0", features = ["derive"] }
+config = "0.14"
+
+# GhostChain ecosystem dependencies (placeholder - will link to actual gcrypt)
+gcrypt = { path = "../gcrypt", optional = true }
+webpki-roots = "0.26"
+rustls-pemfile = "2.0"
+rcgen = "0.12"
+lazy_static = "1.4"
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[features]
+default = ["gcrypt-integration"]
+gcrypt-integration = ["gcrypt"]
+metrics = []
+ffi = []
+
+[dev-dependencies]
+tokio-test = "0.4"
+criterion = "0.5"
+
+[[bench]]
+name = "throughput"
+harness = false
+
+[lib]
+name = "gquic"
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
