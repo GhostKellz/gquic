@@ -1,62 +1,114 @@
-//! GQUIC v0.3.0 - High-Performance QUIC Library for Crypto Applications
-//! 
-//! A fully-featured QUIC transport implementation designed specifically for
-//! cryptocurrency applications, trading systems, and other high-performance
-//! networking applications requiring low latency and high throughput.
+//! GQUIC - A minimal, working QUIC implementation
 
-// Core QUIC implementation - replaces Quinn
-pub mod quic;
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::net::UdpSocket;
 
-// High-level client/server abstractions 
-pub mod client;
-pub mod server;
+pub mod error;
+pub mod connection;
+pub mod packet;
+pub mod frame;
 
-// Cryptography backend integration
-pub mod crypto;
+pub use error::QuicError;
+pub use connection::{Connection, ConnectionId, ConnectionStats};
+pub use packet::Packet;
+pub use frame::Frame;
 
-// Configuration and validation
-pub mod config;
+/// Result type for QUIC operations
+pub type QuicResult<T> = Result<T, QuicError>;
 
-// Security features (rate limiting, DDoS protection)
-pub mod security;
+/// A minimal QUIC endpoint that can send/receive packets
+pub struct Endpoint {
+    socket: Arc<UdpSocket>,
+    connections: HashMap<ConnectionId, Connection>,
+}
 
-// Connection pooling and management
-pub mod pool;
+impl Endpoint {
+    /// Create a new QUIC endpoint
+    pub async fn bind(addr: SocketAddr) -> QuicResult<Self> {
+        let socket = UdpSocket::bind(addr).await
+            .map_err(|e| QuicError::Io(e))?;
+        
+        Ok(Self {
+            socket: Arc::new(socket),
+            connections: HashMap::new(),
+        })
+    }
 
-// Metrics and monitoring
-pub mod metrics;
+    /// Accept incoming connections
+    pub async fn accept(&mut self) -> QuicResult<Connection> {
+        let mut buf = vec![0u8; 65535];
+        let (len, addr) = self.socket.recv_from(&mut buf).await
+            .map_err(|e| QuicError::Io(e))?;
+        
+        buf.truncate(len);
+        let packet = Packet::parse(&buf)?;
+        
+        // For now, just create a basic connection
+        let conn_id = packet.connection_id();
+        let conn = Connection::new(conn_id.clone(), addr, self.socket.clone());
+        
+        self.connections.insert(conn_id.clone(), conn.clone());
+        Ok(conn)
+    }
 
-// Observability and monitoring tools
-pub mod observability;
+    /// Create a crypto-aware QUIC endpoint with encryption
+    pub async fn bind_crypto(addr: SocketAddr, crypto_key: Vec<u8>) -> QuicResult<CryptoEndpoint> {
+        let socket = UdpSocket::bind(addr).await
+            .map_err(|e| QuicError::Io(e))?;
+        
+        Ok(CryptoEndpoint {
+            socket: Arc::new(socket),
+            connections: HashMap::new(),
+            crypto_key,
+        })
+    }
+    
+    /// Get endpoint statistics for monitoring
+    pub fn stats(&self) -> EndpointStats {
+        EndpointStats {
+            active_connections: self.connections.len(),
+            total_connections: self.connections.len(), // Placeholder
+        }
+    }
+}
 
-// Protocol buffer definitions
-pub mod proto;
+/// Crypto-enhanced QUIC endpoint for blockchain/crypto applications
+pub struct CryptoEndpoint {
+    socket: Arc<UdpSocket>,
+    connections: HashMap<ConnectionId, Connection>,
+    crypto_key: Vec<u8>,
+}
 
-// FFI for Zig integration
-#[cfg(feature = "ffi")]
-pub mod ffi;
+impl CryptoEndpoint {
+    /// Accept encrypted connections
+    pub async fn accept_encrypted(&mut self) -> QuicResult<Connection> {
+        let mut buf = vec![0u8; 65535];
+        let (len, addr) = self.socket.recv_from(&mut buf).await
+            .map_err(|e| QuicError::Io(e))?;
+        
+        buf.truncate(len);
+        let packet = Packet::parse_encrypted(&buf, &self.crypto_key)?;
+        
+        let conn_id = packet.connection_id();
+        let conn = Connection::new(conn_id.clone(), addr, self.socket.clone());
+        
+        self.connections.insert(conn_id.clone(), conn.clone());
+        Ok(conn)
+    }
+    
+    /// Send encrypted data to all connections
+    pub async fn broadcast_encrypted(&self, data: &[u8]) -> QuicResult<()> {
+        for conn in self.connections.values() {
+            conn.send_encrypted(data, &self.crypto_key).await?;
+        }
+        Ok(())
+    }
+}
 
-// Re-export main types for easier usage
-pub use quic::{
-    Connection, ConnectionId, ConnectionState,
-    Endpoint, EndpointConfig, EndpointEvent,
-    BiStream, UniStream, StreamId,
-    QuicError, ConnectionError, StreamError,
-};
-
-pub use crypto::{CryptoBackend, QuicCrypto};
-
-#[cfg(feature = "gcrypt-integration")]
-pub use crypto::gcrypt_backend;
-
-/// Version information
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Prelude module for common imports
-pub mod prelude {
-    pub use crate::quic::{Connection, Endpoint, EndpointConfig, EndpointEvent, BiStream, UniStream, StreamId};
-    pub use crate::client::{QuicClient, QuicClientBuilder, QuicClientConfig};
-    pub use crate::server::{QuicServer, QuicServerBuilder, QuicServerConfig};
-    pub use crate::crypto::{CryptoBackend, QuicCrypto};
-    pub use anyhow::Result;
+#[derive(Debug)]
+pub struct EndpointStats {
+    pub active_connections: usize,
+    pub total_connections: usize,
 }
