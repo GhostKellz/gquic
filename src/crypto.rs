@@ -1,7 +1,7 @@
 //! Crypto backend abstraction for GQUIC
 
 use crate::QuicResult;
-use std::sync::Arc;
+use bytes::Bytes;
 
 /// Trait for cryptographic operations
 pub trait CryptoBackend: Send + Sync {
@@ -75,14 +75,14 @@ pub mod gcc_backend;
 pub mod ring_backend;
 
 /// Create default crypto backend based on available features
-pub fn default_crypto_backend() -> Arc<dyn CryptoBackend> {
+pub fn default_crypto_backend() -> Box<dyn CryptoBackend> {
     #[cfg(feature = "gcc-crypto")]
     {
-        Arc::new(gcc_backend::GccBackend::new())
+        Box::new(gcc_backend::GccBackend::new())
     }
     #[cfg(all(feature = "ring-crypto", not(feature = "gcc-crypto")))]
     {
-        Arc::new(ring_backend::RingBackend::new())
+        Box::new(ring_backend::RingBackend::new())
     }
     #[cfg(not(any(feature = "gcc-crypto", feature = "ring-crypto")))]
     {

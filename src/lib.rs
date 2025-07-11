@@ -9,11 +9,19 @@ pub mod error;
 pub mod connection;
 pub mod packet;
 pub mod frame;
+pub mod crypto;
+pub mod handshake;
+pub mod connection_state;
+pub mod blockchain;
 
 pub use error::QuicError;
 pub use connection::{Connection, ConnectionId, ConnectionStats};
 pub use packet::Packet;
 pub use frame::Frame;
+pub use crypto::{CryptoBackend, PublicKey, PrivateKey, SharedSecret, Signature};
+pub use handshake::{QuicHandshake, HandshakeState};
+pub use connection_state::{ConnectionState, ConnectionStateManager};
+pub use blockchain::{Transaction, Block, TransactionPool, TxHash, BlockHash};
 
 /// Result type for QUIC operations
 pub type QuicResult<T> = Result<T, QuicError>;
@@ -101,7 +109,7 @@ impl CryptoEndpoint {
     /// Send encrypted data to all connections
     pub async fn broadcast_encrypted(&self, data: &[u8]) -> QuicResult<()> {
         for conn in self.connections.values() {
-            conn.send_encrypted(data, &self.crypto_key).await?;
+            conn.send_encrypted(data).await?;
         }
         Ok(())
     }

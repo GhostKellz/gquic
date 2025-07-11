@@ -8,12 +8,24 @@ keywords = ["quic", "crypto", "blockchain", "networking", "protocol"]
 categories = ["network-programming", "cryptography"]
 
 [dependencies]
-tokio = { version = "1.0", features = ["net", "rt-multi-thread", "macros", "time"] }
+tokio = { version = "1.0", features = ["net", "rt-multi-thread", "macros", "time", "sync"] }
 bytes = "1.5"
 thiserror = "1.0"
+# GCC (GhostChain Crypto) - Complete crypto library with AES-GCM, X25519, Ed25519
+gcrypt = { git = "https://github.com/ghostkellz/gcrypt", features = ["alloc", "rand_core"], optional = true }
+# Fallback crypto stack (only if gcrypt not available)
+ring = { version = "0.17", optional = true }
+x25519-dalek = { version = "2.0", optional = true }
+ed25519-dalek = { version = "2.0", optional = true }
+aes-gcm = { version = "0.10", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
+
+[features]
+default = ["gcc-crypto"]
+gcc-crypto = ["gcrypt", "aes-gcm"]
+ring-crypto = ["ring", "x25519-dalek", "ed25519-dalek", "aes-gcm"]
 
 [[example]]
 name = "basic_usage"
