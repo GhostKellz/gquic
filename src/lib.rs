@@ -13,6 +13,13 @@ pub mod crypto;
 pub mod handshake;
 pub mod connection_state;
 pub mod blockchain;
+pub mod quic;
+pub mod tls;
+pub mod http3;
+pub mod config;
+pub mod monitoring;
+pub mod pool;
+pub mod observability;
 
 pub use error::QuicError;
 pub use connection::{Connection, ConnectionId, ConnectionStats};

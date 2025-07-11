@@ -15,6 +15,81 @@ use super::stream::{BiStream, BiStreamHandle, StreamId, UniStream, UniStreamHand
 use super::error::{QuicError, ConnectionError, Result};
 use crate::crypto::{QuicCrypto, PacketKeys, EncryptionLevel, KeyPhase, InitialSecrets};
 
+/// Flow control for streams and connections
+#[derive(Debug)]
+pub struct FlowController {
+    /// Maximum data that can be sent
+    pub max_data: u64,
+    /// Data already sent
+    pub sent_data: u64,
+    /// Maximum data that can be received
+    pub max_receive_data: u64,
+    /// Data already received
+    pub received_data: u64,
+}
+
+impl FlowController {
+    pub fn new(initial_max_data: u64, initial_max_receive_data: u64) -> Self {
+        Self {
+            max_data: initial_max_data,
+            sent_data: 0,
+            max_receive_data: initial_max_receive_data,
+            received_data: 0,
+        }
+    }
+    
+    /// Check if we can send the given amount of data
+    pub fn can_send(&self, bytes: u64) -> bool {
+        self.sent_data + bytes <= self.max_data
+    }
+    
+    /// Record data sent
+    pub fn on_data_sent(&mut self, bytes: u64) -> Result<()> {
+        if !self.can_send(bytes) {
+            return Err(QuicError::Protocol(super::error::ProtocolError::FlowControlViolation(
+                "Flow control limit exceeded".to_string()
+            )));
+        }
+        self.sent_data += bytes;
+        Ok(())
+    }
+    
+    /// Record data received
+    pub fn on_data_received(&mut self, bytes: u64) -> Result<()> {
+        if self.received_data + bytes > self.max_receive_data {
+            return Err(QuicError::Protocol(super::error::ProtocolError::FlowControlViolation(
+                "Receive flow control limit exceeded".to_string()
+            )));
+        }
+        self.received_data += bytes;
+        Ok(())
+    }
+    
+    /// Update maximum sendable data
+    pub fn update_max_data(&mut self, new_max: u64) {
+        if new_max > self.max_data {
+            self.max_data = new_max;
+        }
+    }
+    
+    /// Update maximum receivable data
+    pub fn update_max_receive_data(&mut self, new_max: u64) {
+        if new_max > self.max_receive_data {
+            self.max_receive_data = new_max;
+        }
+    }
+    
+    /// Get available send window
+    pub fn send_window(&self) -> u64 {
+        self.max_data.saturating_sub(self.sent_data)
+    }
+    
+    /// Get available receive window
+    pub fn receive_window(&self) -> u64 {
+        self.max_receive_data.saturating_sub(self.received_data)
+    }
+}
+
 use serde::{Serialize, Deserialize};
 
 /// QUIC connection identifier
@@ -109,6 +184,8 @@ struct ConnectionData {
     keys: HashMap<EncryptionLevel, PacketKeys>,
     key_phase: KeyPhase,
     is_client: bool,
+    // Flow control
+    flow_controller: FlowController,
 }
 
 impl ConnectionData {
@@ -134,6 +211,7 @@ impl ConnectionData {
             keys: HashMap::new(),
             key_phase: KeyPhase::Zero,
             is_client,
+            flow_controller: FlowController::new(65536, 65536), // 64KB initial window
         }
     }
 }
@@ -314,6 +392,47 @@ impl Connection {
         
         info!("Connection {} closed: {}", data.connection_id, reason);
         Ok(())
+    }
+    
+    /// Check if data can be sent (flow control)
+    pub async fn can_send(&self, bytes: u64) -> bool {
+        let data = self.data.read().await;
+        data.flow_controller.can_send(bytes)
+    }
+    
+    /// Record data sent for flow control
+    pub async fn on_data_sent(&self, bytes: u64) -> Result<()> {
+        let mut data = self.data.write().await;
+        data.flow_controller.on_data_sent(bytes)?;
+        data.stats.bytes_sent += bytes;
+        Ok(())
+    }
+    
+    /// Record data received for flow control
+    pub async fn on_data_received(&self, bytes: u64) -> Result<()> {
+        let mut data = self.data.write().await;
+        data.flow_controller.on_data_received(bytes)?;
+        data.stats.bytes_received += bytes;
+        Ok(())
+    }
+    
+    /// Update maximum data that can be sent
+    pub async fn update_max_data(&self, new_max: u64) {
+        let mut data = self.data.write().await;
+        data.flow_controller.update_max_data(new_max);
+        debug!("Updated max data to {} for connection {}", new_max, data.connection_id);
+    }
+    
+    /// Get available send window
+    pub async fn send_window(&self) -> u64 {
+        let data = self.data.read().await;
+        data.flow_controller.send_window()
+    }
+    
+    /// Get available receive window
+    pub async fn receive_window(&self) -> u64 {
+        let data = self.data.read().await;
+        data.flow_controller.receive_window()
     }
     
     /// Send a packet over the connection
