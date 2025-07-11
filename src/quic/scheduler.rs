@@ -697,6 +697,65 @@ impl StreamScheduler {
             Err(QuicError::Config(format!("Stream {} not found", stream_id)))
         }
     }
+
+    /// Static version of schedule_from_priority_queue to avoid borrow checker issues
+    fn schedule_from_priority_queue_static(
+        queue: &mut VecDeque<ScheduledStream>,
+        now: Instant,
+    ) -> Option<(StreamId, Frame)> {
+        // Find the best stream in the queue
+        let best_stream_idx = queue.iter().enumerate()
+            .filter(|(_, stream)| !stream.frames_pending.is_empty())
+            .min_by_key(|(_, stream)| {
+                // Calculate effective priority score
+                let base_priority = stream.priority.as_u8() as u64;
+                let weight_factor = stream.weight as u64;
+                let time_factor = now.duration_since(stream.last_scheduled)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                
+                // Lower score = higher priority
+                base_priority * 1000 - weight_factor * 100 - time_factor
+            })
+            .map(|(idx, _)| idx)?;
+
+        // Extract frame from the best stream
+        Self::extract_frame_from_stream_direct_static(queue, best_stream_idx, now)
+    }
+
+    /// Static version of schedule_round_robin_priority to avoid borrow checker issues
+    fn schedule_round_robin_priority_static(
+        queue: &mut VecDeque<ScheduledStream>,
+        now: Instant,
+    ) -> Option<(StreamId, Frame)> {
+        // Round-robin within this priority level
+        for idx in 0..queue.len() {
+            if !queue[idx].frames_pending.is_empty() {
+                return Self::extract_frame_from_stream_direct_static(queue, idx, now);
+            }
+        }
+        None
+    }
+
+    /// Static version of extract_frame_from_stream_direct to avoid borrow checker issues
+    fn extract_frame_from_stream_direct_static(
+        queue: &mut VecDeque<ScheduledStream>,
+        stream_idx: usize,
+        now: Instant,
+    ) -> Option<(StreamId, Frame)> {
+        if stream_idx >= queue.len() {
+            return None;
+        }
+
+        let stream = &mut queue[stream_idx];
+        if let Some(frame) = stream.frames_pending.pop_front() {
+            let stream_id = stream.stream_id;
+            stream.last_scheduled = now;
+            Some((stream_id, frame))
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]

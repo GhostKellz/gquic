@@ -26,6 +26,19 @@ pub struct QuicHandshake {
     connection_id: ConnectionId,
 }
 
+impl std::fmt::Debug for QuicHandshake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QuicHandshake")
+            .field("state", &self.state)
+            .field("crypto_backend", &"<dyn CryptoBackend>")
+            .field("local_keypair", &self.local_keypair.is_some())
+            .field("peer_public_key", &self.peer_public_key.is_some())
+            .field("shared_secret", &self.shared_secret.is_some())
+            .field("connection_id", &self.connection_id)
+            .finish()
+    }
+}
+
 impl QuicHandshake {
     pub fn new(connection_id: ConnectionId) -> Self {
         Self {

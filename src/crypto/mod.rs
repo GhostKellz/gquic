@@ -4,7 +4,7 @@ use crate::QuicResult;
 use std::sync::Arc;
 
 /// Trait for cryptographic operations
-pub trait CryptoBackend: Send + Sync {
+pub trait CryptoBackend: Send + Sync + std::fmt::Debug {
     /// Generate a new keypair for key exchange
     fn generate_keypair(&self) -> QuicResult<(PublicKey, PrivateKey)>;
     

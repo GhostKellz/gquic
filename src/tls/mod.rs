@@ -7,9 +7,9 @@ use crate::quic::error::{QuicError, Result};
 use bytes::Bytes;
 use rustls::{
     ClientConfig, ServerConfig, ClientConnection, ServerConnection,
-    quic::{QuicExt, Connection as RustlsQuicConnection},
-    Certificate, PrivateKey, RootCertStore,
+    RootCertStore,
 };
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use std::sync::Arc;
 use tracing::{debug, info, warn, error};
 
@@ -51,13 +51,7 @@ impl QuicTlsHandshake {
     pub fn new_client(server_name: &str, alpn_protocols: Vec<Vec<u8>>) -> Result<Self> {
         // Create client config with web PKI roots
         let mut root_store = RootCertStore::empty();
-        root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
-            rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
-                ta.subject,
-                ta.spki,
-                ta.name_constraints,
-            )
-        }));
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
         let mut config = ClientConfig::builder()
             .with_safe_defaults()
@@ -287,34 +281,31 @@ pub fn http3_alpn_protocols() -> Vec<Vec<u8>> {
 }
 
 /// Helper function to load certificates from PEM file
-pub fn load_certs(filename: &str) -> Result<Vec<Certificate>> {
+pub fn load_certs(filename: &str) -> Result<Vec<CertificateDer<'static>>> {
     let certfile = std::fs::File::open(filename)
         .map_err(|e| QuicError::Config(format!("Failed to open cert file: {}", e)))?;
     let mut reader = std::io::BufReader::new(certfile);
     
-    let certs = rustls_pemfile::certs(&mut reader)
-        .map_err(|e| QuicError::Config(format!("Failed to parse certificates: {}", e)))?
-        .into_iter()
-        .map(Certificate)
-        .collect();
+    let certs: Result<Vec<_>, _> = rustls_pemfile::certs(&mut reader).collect();
+    let certs = certs.map_err(|e| QuicError::Config(format!("Failed to parse certificates: {}", e)))?;
     
     Ok(certs)
 }
 
 /// Helper function to load private key from PEM file
-pub fn load_private_key(filename: &str) -> Result<PrivateKey> {
+pub fn load_private_key(filename: &str) -> Result<PrivateKeyDer<'static>> {
     let keyfile = std::fs::File::open(filename)
         .map_err(|e| QuicError::Config(format!("Failed to open key file: {}", e)))?;
     let mut reader = std::io::BufReader::new(keyfile);
     
-    let keys = rustls_pemfile::pkcs8_private_keys(&mut reader)
-        .map_err(|e| QuicError::Config(format!("Failed to parse private key: {}", e)))?;
+    let keys: Result<Vec<_>, _> = rustls_pemfile::pkcs8_private_keys(&mut reader).collect();
+    let keys = keys.map_err(|e| QuicError::Config(format!("Failed to parse private key: {}", e)))?;
     
     if keys.is_empty() {
         return Err(QuicError::Config("No private key found".to_string()));
     }
     
-    Ok(PrivateKey(keys[0].clone()))
+    Ok(PrivateKeyDer::Pkcs8(keys[0].clone()))
 }
 
 #[cfg(test)]

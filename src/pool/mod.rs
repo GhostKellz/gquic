@@ -350,7 +350,7 @@ impl ConnectionPool {
     }
     
     /// Return a connection to the pool
-    #[instrument(skip(self, mut connection))]
+    #[instrument(skip(self, connection))]
     pub async fn return_connection(&self, mut connection: PooledConnection) -> Result<()> {
         // Validate connection if configured
         if self.config.validate_on_return {

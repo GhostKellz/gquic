@@ -25,7 +25,7 @@ impl ConnectionId {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Connection {
     id: ConnectionId,
     remote_addr: SocketAddr,
