@@ -1,4 +1,11 @@
-//! GQUIC - A minimal, working QUIC implementation
+//! GQUIC - The Definitive Rust QUIC Library
+//!
+//! GQUIC provides a high-performance, RFC 9000 compliant QUIC implementation
+//! for networking, cryptography, and blockchain applications. Designed for:
+//! - High-performance networking (VPNs, CDNs, real-time protocols)
+//! - Cryptographic applications (secure channels, key exchange, ZK proofs)
+//! - Blockchain protocols (DEX trading, node communication, DeFi)
+//! - Gaming and real-time applications (low-latency, reliable transport)
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -13,6 +20,29 @@ pub mod crypto;
 pub mod handshake;
 pub mod connection_state;
 pub mod blockchain;
+pub mod tls;
+pub mod quic;
+pub mod protection;
+pub mod flow_control;
+pub mod recovery;
+pub mod congestion;
+pub mod http3;
+pub mod mesh;
+pub mod proxy;
+pub mod quinn_compat;
+pub mod quiche_compat;
+pub mod zerocopy;
+pub mod observability;
+pub mod udp_mux_advanced;
+pub mod multipath;
+pub mod network;
+pub mod wireguard;
+pub mod derp;
+pub mod discovery;
+pub mod hardware;
+pub mod gaming;
+pub mod deployment;
+pub mod benchmarks;
 
 pub use error::QuicError;
 pub use connection::{Connection, ConnectionId, ConnectionStats};

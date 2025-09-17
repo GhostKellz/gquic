@@ -14,7 +14,7 @@ pub mod packet;
 pub mod udp_mux;
 
 // Re-export commonly used items
-pub use connection::{Connection, ConnectionId, ConnectionState, ConnectionStats, FlowController};
+pub use connection::{Connection, ConnectionId, ConnectionState, ConnectionStats};
 pub use endpoint::Endpoint;
 pub use error::{QuicError, Result, ProtocolError, ConnectionError, StreamError};
 pub use stream::{BiStream, UniStream, StreamId};

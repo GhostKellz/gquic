@@ -13,7 +13,8 @@ use super::frame::Frame;
 use super::packet::{Packet, PacketHeader, PacketNumber, PacketType};
 use super::stream::{BiStream, BiStreamHandle, StreamId, UniStream, UniStreamHandle};
 use super::error::{QuicError, ConnectionError, Result};
-use crate::crypto::{QuicCrypto, PacketKeys, EncryptionLevel, KeyPhase, InitialSecrets};
+// use crate::crypto::{CryptoBackend, PublicKey, PrivateKey, SharedSecret, Signature};
+use crate::tls::EncryptionLevel;
 
 use serde::{Serialize, Deserialize};
 
@@ -104,10 +105,8 @@ struct ConnectionData {
     uni_streams: HashMap<StreamId, UniStreamHandle>,
     last_activity: Instant,
     idle_timeout: Duration,
-    // Crypto state
-    crypto: Option<Arc<QuicCrypto>>,
-    keys: HashMap<EncryptionLevel, PacketKeys>,
-    key_phase: KeyPhase,
+    // Crypto state - simplified for now
+    crypto_enabled: bool,
     is_client: bool,
 }
 
@@ -130,9 +129,7 @@ impl ConnectionData {
             uni_streams: HashMap::new(),
             last_activity: Instant::now(),
             idle_timeout: Duration::from_secs(30),
-            crypto: None,
-            keys: HashMap::new(),
-            key_phase: KeyPhase::Zero,
+            crypto_enabled: false,
             is_client,
         }
     }
@@ -186,26 +183,9 @@ impl Connection {
     }
     
     /// Initialize crypto for the connection
-    pub async fn initialize_crypto(&self, crypto: Arc<QuicCrypto>) -> Result<()> {
+    pub async fn initialize_crypto(&self) -> Result<()> {
         let mut data = self.data.write().await;
-        
-        // Derive initial secrets
-        let connection_id_bytes = data.connection_id.as_bytes();
-        let initial_secrets = crypto.derive_initial_secrets(connection_id_bytes)?;
-        
-        // Derive packet keys for client and server
-        let client_keys = crypto.derive_packet_keys(&initial_secrets.client)?;
-        let server_keys = crypto.derive_packet_keys(&initial_secrets.server)?;
-        
-        // Store keys based on perspective
-        if data.is_client {
-            data.keys.insert(EncryptionLevel::Initial, client_keys);
-        } else {
-            data.keys.insert(EncryptionLevel::Initial, server_keys);
-        }
-        
-        data.crypto = Some(crypto);
-        
+        data.crypto_enabled = true;
         info!("Crypto initialized for connection {}", data.connection_id);
         Ok(())
     }

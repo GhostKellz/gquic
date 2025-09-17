@@ -2,15 +2,31 @@
 name = "gquic"
 version = "2024.0.0"
 edition = "2021"
-description = "Production-ready QUIC implementation for crypto and blockchain applications"
+description = "The definitive Rust QUIC library for networking, crypto, and blockchain applications"
 license = "MIT"
 keywords = ["quic", "crypto", "blockchain", "networking", "protocol"]
-categories = ["network-programming", "cryptography"]
+categories = ["network-programming", "cryptography", "web-programming"]
 
 [dependencies]
-tokio = { version = "1.0", features = ["net", "rt-multi-thread", "macros", "time", "sync"] }
+tokio = { version = "1.0", features = ["net", "rt-multi-thread", "macros", "time", "sync", "io-util"] }
 bytes = "1.5"
 thiserror = "1.0"
+tracing = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+uuid = { version = "1.0", features = ["v4"] }
+hex = "0.4"
+anyhow = "1.0"
+serde_json = "1.0"
+base64 = "0.21"
+chrono = { version = "0.4", features = ["serde"] }
+parking_lot = "0.12"
+bincode = "1.3"
+serde_yaml = "0.9"
+fastrand = "2.0"
+num_cpus = "1.0"
+# TLS and QUIC crypto
+rustls = { version = "0.23", optional = true }
+rustls-native-certs = { version = "0.7", optional = true }
 # GCC (GhostChain Crypto) integration
 gcrypt = { git = "https://github.com/ghostkellz/gcrypt", optional = true }
 # Crypto fallbacks if GCC not available
@@ -19,14 +35,18 @@ x25519-dalek = { version = "2.0", optional = true }
 ed25519-dalek = { version = "2.0", optional = true }
 aes-gcm = { version = "0.10", optional = true }
 rand = { version = "0.8", optional = true }
+# Hardware acceleration
+cpufeatures = { version = "0.2", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
 
 [features]
-default = ["ring-crypto"]
+default = ["ring-crypto", "rustls-tls"]
 gcc-crypto = ["gcrypt"]
 ring-crypto = ["ring", "x25519-dalek", "ed25519-dalek", "aes-gcm", "rand"]
+rustls-tls = ["rustls", "rustls-native-certs"]
+hardware-accel = ["cpufeatures"]
 
 [[example]]
 name = "basic_usage"
