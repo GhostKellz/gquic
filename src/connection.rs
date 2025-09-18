@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 
-use crate::crypto::{CryptoBackend, SharedSecret, default_crypto_backend};
+use crate::crypto::{CryptoBackend, default_crypto_backend};
 use crate::handshake::QuicHandshake;
 use crate::QuicResult;
 

@@ -1,73 +1,88 @@
 //! Crypto backend abstraction for GQUIC
 
-use crate::QuicResult;
+use anyhow::Result;
 use std::sync::Arc;
 
-/// Trait for cryptographic operations
+/// Unified trait for QUIC cryptographic operations
 pub trait CryptoBackend: Send + Sync + std::fmt::Debug {
-    /// Generate a new keypair for key exchange
-    fn generate_keypair(&self) -> QuicResult<(PublicKey, PrivateKey)>;
-    
-    /// Perform key exchange to derive shared secret
-    fn key_exchange(&self, private_key: &PrivateKey, peer_public_key: &PublicKey) -> QuicResult<SharedSecret>;
-    
-    /// Encrypt data with the given key
-    fn encrypt(&self, data: &[u8], key: &SharedSecret, nonce: &[u8]) -> QuicResult<Vec<u8>>;
-    
-    /// Decrypt data with the given key
-    fn decrypt(&self, data: &[u8], key: &SharedSecret, nonce: &[u8]) -> QuicResult<Vec<u8>>;
-    
-    /// Sign data with private key
-    fn sign(&self, data: &[u8], private_key: &PrivateKey) -> QuicResult<Signature>;
-    
-    /// Verify signature with public key
-    fn verify(&self, data: &[u8], signature: &Signature, public_key: &PublicKey) -> QuicResult<bool>;
-    
-    /// Generate random nonce
-    fn generate_nonce(&self) -> QuicResult<[u8; 12]>;
+    fn name(&self) -> &'static str;
+
+    // Key generation and management
+    fn generate_keypair(&self, key_type: KeyType) -> Result<KeyPair>;
+    fn import_private_key(&self, key_data: &[u8], key_type: KeyType) -> Result<PrivateKey>;
+    fn export_public_key(&self, private_key: &PrivateKey) -> Result<PublicKey>;
+
+    // Digital signatures
+    fn sign(&self, private_key: &PrivateKey, data: &[u8]) -> Result<Signature>;
+    fn verify(&self, public_key: &PublicKey, data: &[u8], signature: &Signature) -> Result<bool>;
+
+    // Key derivation (HKDF)
+    fn derive_key(&self, secret: &[u8], salt: &[u8], info: &[u8], length: usize) -> Result<Vec<u8>>;
+
+    // AEAD encryption/decryption for packet protection
+    fn encrypt_aead(&self, key: &[u8], nonce: &[u8], aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>>;
+    fn decrypt_aead(&self, key: &[u8], nonce: &[u8], aad: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>>;
 }
 
-/// Public key type
-#[derive(Debug, Clone)]
-pub struct PublicKey(pub Vec<u8>);
-
-/// Private key type  
-#[derive(Debug, Clone)]
-pub struct PrivateKey(pub Vec<u8>);
-
-/// Shared secret from key exchange
-#[derive(Debug, Clone)]
-pub struct SharedSecret(pub [u8; 32]);
-
-/// Digital signature
-#[derive(Debug, Clone)]
-pub struct Signature(pub Vec<u8>);
-
-impl PublicKey {
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
+/// Supported cryptographic key types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyType {
+    Ed25519,
+    Secp256r1,
+    Secp256k1,
 }
 
-impl PrivateKey {
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
+/// Public key with associated algorithm
+#[derive(Debug, Clone)]
+pub struct PublicKey {
+    pub data: Vec<u8>,
+    pub key_type: KeyType,
 }
 
-impl SharedSecret {
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
+/// Private key with associated algorithm
+#[derive(Debug, Clone)]
+pub struct PrivateKey {
+    pub data: Vec<u8>,
+    pub key_type: KeyType,
 }
 
-impl Signature {
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
+/// Cryptographic key pair
+#[derive(Debug, Clone)]
+pub struct KeyPair {
+    pub private_key: PrivateKey,
+    pub public_key: PublicKey,
+    pub key_type: KeyType,
+}
+
+/// Digital signature with type information
+#[derive(Debug, Clone)]
+pub struct Signature {
+    pub data: Vec<u8>,
+    pub signature_type: SignatureType,
+}
+
+/// Signature algorithm types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureType {
+    Ed25519,
+    EcdsaSecp256r1Sha256,
+    EcdsaSecp256k1Sha256,
+}
+
+impl From<KeyType> for SignatureType {
+    fn from(key_type: KeyType) -> Self {
+        match key_type {
+            KeyType::Ed25519 => SignatureType::Ed25519,
+            KeyType::Secp256r1 => SignatureType::EcdsaSecp256r1Sha256,
+            KeyType::Secp256k1 => SignatureType::EcdsaSecp256k1Sha256,
+        }
     }
 }
 
 // Re-export crypto implementations
+pub mod quic_crypto;
+pub mod rustls_backend;
+
 #[cfg(feature = "gcc-crypto")]
 pub mod gcc_backend;
 
@@ -82,10 +97,49 @@ pub fn default_crypto_backend() -> Arc<dyn CryptoBackend> {
     }
     #[cfg(all(feature = "ring-crypto", not(feature = "gcc-crypto")))]
     {
-        Arc::new(ring_backend::RingBackend::new())
+        Arc::new(rustls_backend::RustlsBackend::new())
     }
     #[cfg(not(any(feature = "gcc-crypto", feature = "ring-crypto")))]
     {
         compile_error!("No crypto backend enabled. Enable either 'gcc-crypto' or 'ring-crypto'");
+    }
+}
+
+/// Default QUIC crypto implementation
+pub fn new_quic_crypto() -> quic_crypto::QuicCrypto {
+    quic_crypto::QuicCrypto::new(default_crypto_backend())
+}
+
+/// TLS 1.3 integration for QUIC handshake
+pub mod tls {
+    use super::*;
+
+    /// TLS handshake state for QUIC
+    #[derive(Debug)]
+    pub enum HandshakeState {
+        Initial,
+        InProgress,
+        Complete,
+        Failed(String),
+    }
+
+    /// TLS configuration for QUIC
+    #[derive(Debug, Clone)]
+    pub struct TlsConfig {
+        pub server_name: Option<String>,
+        pub alpn_protocols: Vec<Vec<u8>>,
+        pub certificate_chain: Vec<Vec<u8>>,
+        pub private_key: Option<PrivateKey>,
+    }
+
+    impl Default for TlsConfig {
+        fn default() -> Self {
+            Self {
+                server_name: None,
+                alpn_protocols: vec![b"h3".to_vec()], // HTTP/3
+                certificate_chain: Vec::new(),
+                private_key: None,
+            }
+        }
     }
 }

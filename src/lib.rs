@@ -53,7 +53,7 @@ pub use error::QuicError;
 pub use connection::{Connection, ConnectionId, ConnectionStats};
 pub use packet::Packet;
 pub use frame::Frame;
-pub use crypto::{CryptoBackend, PublicKey, PrivateKey, SharedSecret, Signature};
+pub use crypto::{CryptoBackend, PublicKey, PrivateKey, Signature, KeyPair};
 pub use handshake::{QuicHandshake, HandshakeState};
 pub use connection_state::{ConnectionState, ConnectionStateManager};
 pub use blockchain::{Transaction, Block, TransactionPool, TxHash, BlockHash};

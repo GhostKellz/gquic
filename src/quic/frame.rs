@@ -228,11 +228,11 @@ impl Frame {
             FrameType::Stream => {
                 let (stream_id, consumed) = decode_varint(data)?;
                 data = &data[consumed..];
-                
+
                 let has_offset = (frame_type_byte & 0x04) != 0;
                 let has_length = (frame_type_byte & 0x02) != 0;
                 let fin = (frame_type_byte & 0x01) != 0;
-                
+
                 let offset = if has_offset {
                     let (offset, consumed) = decode_varint(data)?;
                     data = &data[consumed..];
@@ -240,7 +240,7 @@ impl Frame {
                 } else {
                     0
                 };
-                
+
                 let stream_data = if has_length {
                     let (length, consumed) = decode_varint(data)?;
                     data = &data[consumed..];
@@ -258,7 +258,7 @@ impl Frame {
                     data = &[];
                     stream_data
                 };
-                
+
                 Frame::Stream {
                     stream_id: StreamId::new(stream_id),
                     offset,
@@ -266,6 +266,148 @@ impl Frame {
                     fin,
                 }
             }
+            FrameType::Crypto => {
+                let (offset, consumed) = decode_varint(data)?;
+                data = &data[consumed..];
+
+                let (length, consumed) = decode_varint(data)?;
+                data = &data[consumed..];
+
+                if data.len() < length as usize {
+                    return Err(super::error::QuicError::Protocol(
+                        super::error::ProtocolError::InvalidFrameFormat("Insufficient crypto data".to_string())
+                    ));
+                }
+
+                let crypto_data = Bytes::copy_from_slice(&data[..length as usize]);
+                data = &data[length as usize..];
+
+                Frame::Crypto {
+                    offset,
+                    data: crypto_data,
+                }
+            }
+            FrameType::Ack => {
+                let (largest_acknowledged, consumed) = decode_varint(data)?;
+                data = &data[consumed..];
+
+                let (ack_delay, consumed) = decode_varint(data)?;
+                data = &data[consumed..];
+
+                let (ack_range_count, consumed) = decode_varint(data)?;
+                data = &data[consumed..];
+
+                let (first_ack_range, consumed) = decode_varint(data)?;
+                data = &data[consumed..];
+
+                let mut ack_ranges = vec![(largest_acknowledged - first_ack_range, largest_acknowledged)];
+
+                let mut current_largest = largest_acknowledged - first_ack_range - 1;
+                for _ in 0..ack_range_count {
+                    let (gap, consumed) = decode_varint(data)?;
+                    data = &data[consumed..];
+
+                    let (ack_range_length, consumed) = decode_varint(data)?;
+                    data = &data[consumed..];
+
+                    current_largest -= gap + 1;
+                    let range_start = current_largest - ack_range_length;
+                    ack_ranges.push((range_start, current_largest));
+                    current_largest = range_start - 1;
+                }
+
+                Frame::Ack {
+                    largest_acknowledged,
+                    ack_delay,
+                    ack_ranges,
+                }
+            }
+            FrameType::MaxData => {
+                let (maximum_data, consumed) = decode_varint(data)?;
+                data = &data[consumed..];
+
+                Frame::MaxData { maximum_data }
+            }
+            FrameType::MaxStreamData => {
+                let (stream_id, consumed) = decode_varint(data)?;
+                data = &data[consumed..];
+
+                let (maximum_stream_data, consumed) = decode_varint(data)?;
+                data = &data[consumed..];
+
+                Frame::MaxStreamData {
+                    stream_id: StreamId::new(stream_id),
+                    maximum_stream_data,
+                }
+            }
+            FrameType::ResetStream => {
+                let (stream_id, consumed) = decode_varint(data)?;
+                data = &data[consumed..];
+
+                let (application_error_code, consumed) = decode_varint(data)?;
+                data = &data[consumed..];
+
+                let (final_size, consumed) = decode_varint(data)?;
+                data = &data[consumed..];
+
+                Frame::ResetStream {
+                    stream_id: StreamId::new(stream_id),
+                    application_error_code,
+                    final_size,
+                }
+            }
+            FrameType::ConnectionClose => {
+                let (error_code, consumed) = decode_varint(data)?;
+                data = &data[consumed..];
+
+                let (frame_type, consumed) = decode_varint(data)?;
+                data = &data[consumed..];
+
+                let (reason_length, consumed) = decode_varint(data)?;
+                data = &data[consumed..];
+
+                if data.len() < reason_length as usize {
+                    return Err(super::error::QuicError::Protocol(
+                        super::error::ProtocolError::InvalidFrameFormat("Insufficient reason phrase data".to_string())
+                    ));
+                }
+
+                let reason_phrase = String::from_utf8_lossy(&data[..reason_length as usize]).to_string();
+                data = &data[reason_length as usize..];
+
+                Frame::ConnectionClose {
+                    error_code,
+                    frame_type: if frame_type > 0 { Some(frame_type) } else { None },
+                    reason_phrase,
+                }
+            }
+            FrameType::PathChallenge => {
+                if data.len() < 8 {
+                    return Err(super::error::QuicError::Protocol(
+                        super::error::ProtocolError::InvalidFrameFormat("Insufficient path challenge data".to_string())
+                    ));
+                }
+
+                let mut challenge_data = [0u8; 8];
+                challenge_data.copy_from_slice(&data[..8]);
+                data = &data[8..];
+
+                Frame::PathChallenge { data: challenge_data }
+            }
+            FrameType::PathResponse => {
+                if data.len() < 8 {
+                    return Err(super::error::QuicError::Protocol(
+                        super::error::ProtocolError::InvalidFrameFormat("Insufficient path response data".to_string())
+                    ));
+                }
+
+                let mut response_data = [0u8; 8];
+                response_data.copy_from_slice(&data[..8]);
+                data = &data[8..];
+
+                Frame::PathResponse { data: response_data }
+            }
+            FrameType::HandshakeDone => Frame::HandshakeDone,
             _ => {
                 return Err(super::error::QuicError::Protocol(
                     super::error::ProtocolError::InvalidFrameFormat(format!("Unimplemented frame type: {:?}", frame_type))
