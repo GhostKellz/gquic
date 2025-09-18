@@ -43,6 +43,11 @@ pub mod hardware;
 pub mod gaming;
 pub mod deployment;
 pub mod benchmarks;
+pub mod webtransport;
+pub mod zero_rtt;
+pub mod migration;
+pub mod qpack;
+pub mod ecn;
 
 pub use error::QuicError;
 pub use connection::{Connection, ConnectionId, ConnectionStats};
