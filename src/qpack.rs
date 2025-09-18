@@ -1,7 +1,14 @@
-//! QPACK Header Compression for HTTP/3
+//! Enhanced QPACK Header Compression for HTTP/3
 //!
 //! QPACK is the header compression mechanism for HTTP/3, designed to avoid
 //! head-of-line blocking issues while maintaining high compression ratios.
+//!
+//! This enhanced implementation provides:
+//! - Advanced compression strategies
+//! - Optimized dynamic table management
+//! - Performance monitoring and metrics
+//! - Integration with HTTP/3 frame processing
+//! - Memory usage optimization
 
 use crate::{QuicError, QuicResult};
 use bytes::{Bytes, BytesMut, Buf, BufMut};
@@ -282,6 +289,18 @@ impl QpackEncoder {
             encoder_stream: BytesMut::with_capacity(4096),
             known_received_count: 0,
             config,
+        }
+    }
+
+    /// Create an enhanced QPACK encoder with optimization features
+    pub fn new_enhanced(config: QpackConfig) -> EnhancedQpackEncoder {
+        let base_encoder = Self::new(config.clone());
+        EnhancedQpackEncoder {
+            encoder: base_encoder,
+            compression_strategy: CompressionStrategy::Adaptive,
+            stats: QpackStats::default(),
+            table_optimizer: TableOptimizer::new(),
+            memory_tracker: MemoryTracker::new(),
         }
     }
 
@@ -785,4 +804,459 @@ mod tests {
 
         assert_eq!(headers, decoded);
     }
+}
+
+/// Enhanced QPACK encoder with advanced optimization features
+pub struct EnhancedQpackEncoder {
+    encoder: QpackEncoder,
+    compression_strategy: CompressionStrategy,
+    stats: QpackStats,
+    table_optimizer: TableOptimizer,
+    memory_tracker: MemoryTracker,
+}
+
+impl EnhancedQpackEncoder {
+    /// Encode headers with advanced optimization
+    pub async fn encode_optimized(
+        &mut self,
+        headers: &[(Vec<u8>, Vec<u8>)],
+        stream_id: u64,
+    ) -> QuicResult<(Vec<u8>, CompressionMetrics)> {
+        let start_time = std::time::Instant::now();
+        let original_size = headers.iter().map(|(n, v)| n.len() + v.len()).sum::<usize>();
+
+        // Apply compression strategy
+        let optimized_headers = self.apply_compression_strategy(headers).await?;
+
+        // Perform encoding with the base encoder
+        let encoded = self.encoder.encode(&optimized_headers, stream_id).await?;
+
+        // Update statistics
+        let compression_time = start_time.elapsed();
+        let compressed_size = encoded.len();
+        let compression_ratio = original_size as f64 / compressed_size as f64;
+
+        let metrics = CompressionMetrics {
+            original_size,
+            compressed_size,
+            compression_ratio,
+            compression_time,
+            table_utilization: self.table_optimizer.utilization(),
+        };
+
+        self.stats.update_compression(&metrics);
+
+        // Optimize table if needed
+        if self.should_optimize_table() {
+            self.optimize_table().await?;
+        }
+
+        // Update memory tracking
+        self.memory_tracker.update_usage(compressed_size);
+
+        Ok((encoded, metrics))
+    }
+
+    async fn apply_compression_strategy(&mut self, headers: &[(Vec<u8>, Vec<u8>)]) -> QuicResult<Vec<(Vec<u8>, Vec<u8>)>> {
+        match self.compression_strategy {
+            CompressionStrategy::Aggressive => self.apply_aggressive_compression(headers).await,
+            CompressionStrategy::Conservative => self.apply_conservative_compression(headers).await,
+            CompressionStrategy::Adaptive => self.apply_adaptive_compression(headers).await,
+        }
+    }
+
+    async fn apply_aggressive_compression(&mut self, headers: &[(Vec<u8>, Vec<u8>)]) -> QuicResult<Vec<(Vec<u8>, Vec<u8>)>> {
+        // Pre-populate dynamic table with common patterns
+        for (name, value) in headers {
+            if self.should_add_to_table(name, value) {
+                self.encoder.dynamic_table.insert(name.clone(), value.clone(), self.encoder.max_table_capacity);
+            }
+        }
+        Ok(headers.to_vec())
+    }
+
+    async fn apply_conservative_compression(&mut self, headers: &[(Vec<u8>, Vec<u8>)]) -> QuicResult<Vec<(Vec<u8>, Vec<u8>)>> {
+        // Only use static table for compression
+        Ok(headers.to_vec())
+    }
+
+    async fn apply_adaptive_compression(&mut self, headers: &[(Vec<u8>, Vec<u8>)]) -> QuicResult<Vec<(Vec<u8>, Vec<u8>)>> {
+        // Adapt based on current statistics
+        let avg_ratio = self.stats.average_compression_ratio();
+
+        if avg_ratio > 2.0 {
+            // Good compression, be more aggressive
+            self.compression_strategy = CompressionStrategy::Aggressive;
+            self.apply_aggressive_compression(headers).await
+        } else if avg_ratio < 1.2 {
+            // Poor compression, be more conservative
+            self.compression_strategy = CompressionStrategy::Conservative;
+            self.apply_conservative_compression(headers).await
+        } else {
+            // Moderate compression, maintain current approach
+            Ok(headers.to_vec())
+        }
+    }
+
+    fn should_add_to_table(&self, name: &[u8], value: &[u8]) -> bool {
+        // Heuristics for deciding whether to add to dynamic table
+        let entry_size = name.len() + value.len() + 32; // RFC overhead
+
+        // Don't add large entries
+        if entry_size > 1024 {
+            return false;
+        }
+
+        // Don't add if table is near capacity
+        if self.encoder.dynamic_table.current_size + entry_size > self.encoder.max_table_capacity * 8 / 10 {
+            return false;
+        }
+
+        // Check if it's a common header pattern
+        self.is_common_pattern(name, value)
+    }
+
+    fn is_common_pattern(&self, name: &[u8], value: &[u8]) -> bool {
+        // Check against known common patterns
+        matches!(name,
+            b"content-type" |
+            b"content-length" |
+            b"user-agent" |
+            b"accept" |
+            b"accept-encoding" |
+            b"authorization" |
+            b"cache-control"
+        )
+    }
+
+    fn should_optimize_table(&self) -> bool {
+        // Optimize table periodically or when efficiency drops
+        self.stats.operations_since_optimization > 100 ||
+        self.stats.average_compression_ratio() < 1.5
+    }
+
+    async fn optimize_table(&mut self) -> QuicResult<()> {
+        // Remove unused entries and compact table
+        self.table_optimizer.optimize(&mut self.encoder.dynamic_table);
+        self.stats.reset_optimization_counter();
+        Ok(())
+    }
+
+    pub fn stats(&self) -> QpackStatsSnapshot {
+        self.stats.snapshot()
+    }
+
+    pub fn memory_usage(&self) -> MemoryUsage {
+        self.memory_tracker.current_usage()
+    }
+}
+
+/// Enhanced QPACK decoder with optimization features
+pub struct EnhancedQpackDecoder {
+    decoder: QpackDecoder,
+    stats: QpackStats,
+    cache: DecodingCache,
+    memory_tracker: MemoryTracker,
+}
+
+impl EnhancedQpackDecoder {
+    pub fn new(config: QpackConfig) -> Self {
+        Self {
+            decoder: QpackDecoder::new(config),
+            stats: QpackStats::default(),
+            cache: DecodingCache::new(),
+            memory_tracker: MemoryTracker::new(),
+        }
+    }
+
+    /// Decode headers with caching and optimization
+    pub async fn decode_optimized(&mut self, data: &[u8], stream_id: u64) -> QuicResult<(Vec<(Vec<u8>, Vec<u8>)>, DecodingMetrics)> {
+        let start_time = std::time::Instant::now();
+
+        // Check cache first
+        if let Some(cached) = self.cache.get(data) {
+            let metrics = DecodingMetrics {
+                encoded_size: data.len(),
+                decoded_size: cached.iter().map(|(n, v)| n.len() + v.len()).sum(),
+                decoding_time: start_time.elapsed(),
+                cache_hit: true,
+            };
+            self.stats.update_decoding(&metrics);
+            return Ok((cached, metrics));
+        }
+
+        // Perform decoding
+        let decoded = self.decoder.decode(data, stream_id).await?;
+        let decoding_time = start_time.elapsed();
+
+        let metrics = DecodingMetrics {
+            encoded_size: data.len(),
+            decoded_size: decoded.iter().map(|(n, v)| n.len() + v.len()).sum(),
+            decoding_time,
+            cache_hit: false,
+        };
+
+        // Cache the result
+        self.cache.insert(data.to_vec(), decoded.clone());
+
+        // Update statistics
+        self.stats.update_decoding(&metrics);
+
+        // Update memory tracking
+        self.memory_tracker.update_usage(metrics.decoded_size);
+
+        Ok((decoded, metrics))
+    }
+
+    pub fn stats(&self) -> QpackStatsSnapshot {
+        self.stats.snapshot()
+    }
+}
+
+/// Compression strategy for QPACK encoding
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CompressionStrategy {
+    /// Aggressive compression with dynamic table usage
+    Aggressive,
+    /// Conservative compression using mainly static table
+    Conservative,
+    /// Adaptive strategy based on performance metrics
+    Adaptive,
+}
+
+/// QPACK compression metrics
+#[derive(Debug, Clone)]
+pub struct CompressionMetrics {
+    pub original_size: usize,
+    pub compressed_size: usize,
+    pub compression_ratio: f64,
+    pub compression_time: std::time::Duration,
+    pub table_utilization: f64,
+}
+
+/// QPACK decoding metrics
+#[derive(Debug, Clone)]
+pub struct DecodingMetrics {
+    pub encoded_size: usize,
+    pub decoded_size: usize,
+    pub decoding_time: std::time::Duration,
+    pub cache_hit: bool,
+}
+
+/// QPACK statistics tracker
+#[derive(Debug, Default)]
+pub struct QpackStats {
+    pub total_compressions: u64,
+    pub total_decompressions: u64,
+    pub total_original_bytes: u64,
+    pub total_compressed_bytes: u64,
+    pub total_compression_time: std::time::Duration,
+    pub total_decompression_time: std::time::Duration,
+    pub operations_since_optimization: u64,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+}
+
+impl QpackStats {
+    pub fn update_compression(&mut self, metrics: &CompressionMetrics) {
+        self.total_compressions += 1;
+        self.total_original_bytes += metrics.original_size as u64;
+        self.total_compressed_bytes += metrics.compressed_size as u64;
+        self.total_compression_time += metrics.compression_time;
+        self.operations_since_optimization += 1;
+    }
+
+    pub fn update_decoding(&mut self, metrics: &DecodingMetrics) {
+        self.total_decompressions += 1;
+        self.total_decompression_time += metrics.decoding_time;
+        if metrics.cache_hit {
+            self.cache_hits += 1;
+        } else {
+            self.cache_misses += 1;
+        }
+    }
+
+    pub fn average_compression_ratio(&self) -> f64 {
+        if self.total_compressed_bytes > 0 {
+            self.total_original_bytes as f64 / self.total_compressed_bytes as f64
+        } else {
+            1.0
+        }
+    }
+
+    pub fn cache_hit_rate(&self) -> f64 {
+        let total_requests = self.cache_hits + self.cache_misses;
+        if total_requests > 0 {
+            self.cache_hits as f64 / total_requests as f64
+        } else {
+            0.0
+        }
+    }
+
+    pub fn reset_optimization_counter(&mut self) {
+        self.operations_since_optimization = 0;
+    }
+
+    pub fn snapshot(&self) -> QpackStatsSnapshot {
+        QpackStatsSnapshot {
+            total_compressions: self.total_compressions,
+            total_decompressions: self.total_decompressions,
+            average_compression_ratio: self.average_compression_ratio(),
+            cache_hit_rate: self.cache_hit_rate(),
+            total_compression_time: self.total_compression_time,
+            total_decompression_time: self.total_decompression_time,
+        }
+    }
+}
+
+/// QPACK statistics snapshot
+#[derive(Debug, Clone)]
+pub struct QpackStatsSnapshot {
+    pub total_compressions: u64,
+    pub total_decompressions: u64,
+    pub average_compression_ratio: f64,
+    pub cache_hit_rate: f64,
+    pub total_compression_time: std::time::Duration,
+    pub total_decompression_time: std::time::Duration,
+}
+
+/// Dynamic table optimizer
+#[derive(Debug)]
+pub struct TableOptimizer {
+    usage_tracker: HashMap<u64, u64>, // entry_index -> usage_count
+    optimization_threshold: u64,
+}
+
+impl TableOptimizer {
+    pub fn new() -> Self {
+        Self {
+            usage_tracker: HashMap::new(),
+            optimization_threshold: 100,
+        }
+    }
+
+    pub fn optimize(&mut self, table: &mut DynamicTable) {
+        // Remove entries that haven't been used recently
+        let mut to_remove = Vec::new();
+
+        for (i, entry) in table.entries.iter().enumerate() {
+            let usage_count = self.usage_tracker.get(&entry.insertion_count).copied().unwrap_or(0);
+            if usage_count < self.optimization_threshold / 10 {
+                to_remove.push(i);
+            }
+        }
+
+        // Remove from back to front to maintain indices
+        for &i in to_remove.iter().rev() {
+            if let Some(removed) = table.entries.remove(i) {
+                table.current_size -= removed.size;
+                table.dropping_count += 1;
+            }
+        }
+
+        // Reset usage tracking
+        self.usage_tracker.clear();
+    }
+
+    pub fn utilization(&self) -> f64 {
+        if self.usage_tracker.is_empty() {
+            0.0
+        } else {
+            let total_usage: u64 = self.usage_tracker.values().sum();
+            let avg_usage = total_usage as f64 / self.usage_tracker.len() as f64;
+            (avg_usage / self.optimization_threshold as f64).min(1.0)
+        }
+    }
+
+    pub fn record_usage(&mut self, entry_index: u64) {
+        *self.usage_tracker.entry(entry_index).or_insert(0) += 1;
+    }
+}
+
+/// Decoding cache for frequently accessed header blocks
+#[derive(Debug)]
+pub struct DecodingCache {
+    cache: HashMap<Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>>,
+    max_entries: usize,
+    access_order: VecDeque<Vec<u8>>,
+}
+
+impl DecodingCache {
+    pub fn new() -> Self {
+        Self {
+            cache: HashMap::new(),
+            max_entries: 1000,
+            access_order: VecDeque::new(),
+        }
+    }
+
+    pub fn get(&mut self, key: &[u8]) -> Option<Vec<(Vec<u8>, Vec<u8>)>> {
+        if let Some(value) = self.cache.get(key) {
+            // Move to front of access order
+            let key_vec = key.to_vec();
+            if let Some(pos) = self.access_order.iter().position(|x| x == &key_vec) {
+                self.access_order.remove(pos);
+            }
+            self.access_order.push_front(key_vec);
+            Some(value.clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn insert(&mut self, key: Vec<u8>, value: Vec<(Vec<u8>, Vec<u8>)>) {
+        if self.cache.len() >= self.max_entries {
+            // Remove least recently used
+            if let Some(lru_key) = self.access_order.pop_back() {
+                self.cache.remove(&lru_key);
+            }
+        }
+
+        self.cache.insert(key.clone(), value);
+        self.access_order.push_front(key);
+    }
+}
+
+/// Memory usage tracker
+#[derive(Debug)]
+pub struct MemoryTracker {
+    current_usage: usize,
+    peak_usage: usize,
+    allocation_count: u64,
+}
+
+impl MemoryTracker {
+    pub fn new() -> Self {
+        Self {
+            current_usage: 0,
+            peak_usage: 0,
+            allocation_count: 0,
+        }
+    }
+
+    pub fn update_usage(&mut self, size: usize) {
+        self.current_usage += size;
+        self.peak_usage = self.peak_usage.max(self.current_usage);
+        self.allocation_count += 1;
+    }
+
+    pub fn release_usage(&mut self, size: usize) {
+        self.current_usage = self.current_usage.saturating_sub(size);
+    }
+
+    pub fn current_usage(&self) -> MemoryUsage {
+        MemoryUsage {
+            current: self.current_usage,
+            peak: self.peak_usage,
+            allocations: self.allocation_count,
+        }
+    }
+}
+
+/// Memory usage information
+#[derive(Debug, Clone)]
+pub struct MemoryUsage {
+    pub current: usize,
+    pub peak: usize,
+    pub allocations: u64,
 }

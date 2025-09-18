@@ -12,10 +12,17 @@ pub enum ConnectionState {
     /// Connection established and ready for data
     Active,
     /// Connection is being closed gracefully
-    Closing { 
-        error_code: u64, 
+    Closing {
+        error_code: u64,
         reason: String,
         initiated_at: Instant,
+    },
+    /// Connection is in draining state (received close, waiting to send final packets)
+    Draining {
+        error_code: u64,
+        reason: String,
+        started_at: Instant,
+        drain_timeout: Duration,
     },
     /// Connection has been closed
     Closed,
@@ -33,6 +40,7 @@ pub struct ConnectionStateManager {
     last_activity: Instant,
     idle_timeout: Duration,
     max_lifetime: Duration,
+    drain_timeout: Duration,
 }
 
 impl ConnectionStateManager {
@@ -44,6 +52,7 @@ impl ConnectionStateManager {
             last_activity: now,
             idle_timeout: Duration::from_secs(30), // 30 second idle timeout
             max_lifetime: Duration::from_secs(3600), // 1 hour max lifetime
+            drain_timeout: Duration::from_secs(3), // 3 second drain timeout
         }
     }
     
@@ -55,6 +64,19 @@ impl ConnectionStateManager {
             last_activity: now,
             idle_timeout,
             max_lifetime,
+            drain_timeout: Duration::from_secs(3),
+        }
+    }
+
+    pub fn with_all_timeouts(idle_timeout: Duration, max_lifetime: Duration, drain_timeout: Duration) -> Self {
+        let now = Instant::now();
+        Self {
+            state: ConnectionState::Initial,
+            created_at: now,
+            last_activity: now,
+            idle_timeout,
+            max_lifetime,
+            drain_timeout,
         }
     }
     
@@ -78,11 +100,19 @@ impl ConnectionStateManager {
     pub fn check_timeouts(&mut self) -> QuicResult<()> {
         let now = Instant::now();
         
+        // Check drain timeout first if in draining state
+        if let ConnectionState::Draining { started_at, drain_timeout, .. } = &self.state {
+            if now.duration_since(*started_at) > *drain_timeout {
+                self.state = ConnectionState::Closed;
+                return Err(QuicError::ConnectionClosed);
+            }
+        }
+
         // Check idle timeout
         if now.duration_since(self.last_activity) > self.idle_timeout {
             match self.state {
-                ConnectionState::Closed | ConnectionState::Failed { .. } => {
-                    // Already closed/failed, nothing to do
+                ConnectionState::Closed | ConnectionState::Failed { .. } | ConnectionState::Draining { .. } => {
+                    // Already closed/failed/draining, nothing to do
                 }
                 _ => {
                     self.state = ConnectionState::Closing {
@@ -113,9 +143,14 @@ impl ConnectionStateManager {
         match self.state {
             ConnectionState::Initial => {
                 self.state = ConnectionState::Handshaking;
+                self.mark_active();
                 Ok(())
             }
-            _ => Err(QuicError::Protocol("Invalid state for handshake".to_string()))
+            ConnectionState::Handshaking => {
+                // Already handshaking, this is fine
+                Ok(())
+            }
+            _ => Err(QuicError::Protocol(format!("Invalid state {:?} for handshake", self.state)))
         }
     }
     
@@ -127,7 +162,11 @@ impl ConnectionStateManager {
                 self.mark_active();
                 Ok(())
             }
-            _ => Err(QuicError::Protocol("Invalid state for handshake completion".to_string()))
+            ConnectionState::Active => {
+                // Already active, this might happen in retransmission scenarios
+                Ok(())
+            }
+            _ => Err(QuicError::Protocol(format!("Invalid state {:?} for handshake completion", self.state)))
         }
     }
     
@@ -152,6 +191,26 @@ impl ConnectionStateManager {
             failed_at: Instant::now(),
         };
     }
+
+    /// Enter draining state (when we receive a close frame)
+    pub fn enter_draining(&mut self, error_code: u64, reason: String) {
+        self.state = ConnectionState::Draining {
+            error_code,
+            reason,
+            started_at: Instant::now(),
+            drain_timeout: self.drain_timeout,
+        };
+    }
+
+    /// Check if connection is in draining state
+    pub fn is_draining(&self) -> bool {
+        matches!(self.state, ConnectionState::Draining { .. })
+    }
+
+    /// Check if connection is closing or draining
+    pub fn is_closing_or_draining(&self) -> bool {
+        matches!(self.state, ConnectionState::Closing { .. } | ConnectionState::Draining { .. })
+    }
     
     /// Check if connection can send data
     pub fn can_send_data(&self) -> bool {
@@ -160,15 +219,23 @@ impl ConnectionStateManager {
     
     /// Check if connection can receive data
     pub fn can_receive_data(&self) -> bool {
-        matches!(self.state, ConnectionState::Active | ConnectionState::Handshaking)
+        matches!(self.state, ConnectionState::Active | ConnectionState::Handshaking | ConnectionState::Draining { .. })
     }
     
     /// Check if connection is closed or failed
     pub fn is_closed(&self) -> bool {
-        matches!(self.state, 
-                 ConnectionState::Closed | 
+        matches!(self.state,
+                 ConnectionState::Closed |
+                 ConnectionState::Failed { .. })
+    }
+
+    /// Check if connection is in any terminal state
+    pub fn is_terminal(&self) -> bool {
+        matches!(self.state,
+                 ConnectionState::Closed |
                  ConnectionState::Failed { .. } |
-                 ConnectionState::Closing { .. })
+                 ConnectionState::Closing { .. } |
+                 ConnectionState::Draining { .. })
     }
     
     /// Get connection statistics

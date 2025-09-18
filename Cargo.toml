@@ -35,6 +35,8 @@ x25519-dalek = { version = "2.0", optional = true }
 ed25519-dalek = { version = "2.0", optional = true }
 aes-gcm = { version = "0.10", optional = true }
 rand = { version = "0.8", optional = true }
+hmac = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
 # Hardware acceleration
 cpufeatures = { version = "0.2", optional = true }
 
@@ -44,7 +46,7 @@ tokio-test = "0.4"
 [features]
 default = ["ring-crypto", "rustls-tls"]
 gcc-crypto = ["gcrypt"]
-ring-crypto = ["ring", "x25519-dalek", "ed25519-dalek", "aes-gcm", "rand"]
+ring-crypto = ["ring", "x25519-dalek", "ed25519-dalek", "aes-gcm", "rand", "hmac", "sha2"]
 rustls-tls = ["rustls", "rustls-native-certs"]
 hardware-accel = ["cpufeatures"]
 

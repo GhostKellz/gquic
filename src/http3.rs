@@ -97,6 +97,677 @@ impl Http3Header {
     }
 }
 
+/// Advanced HTTP/3 frame processor with integration
+pub struct AdvancedHttp3Processor {
+    frame_parser: Http3FrameParser,
+    qpack_encoder: QpackEncoder,
+    qpack_decoder: QpackDecoder,
+    stream_manager: Http3StreamManager,
+    settings: Http3Settings,
+    stats: Http3Stats,
+}
+
+impl AdvancedHttp3Processor {
+    pub fn new(settings: Http3Settings) -> Self {
+        Self {
+            frame_parser: Http3FrameParser::new(),
+            qpack_encoder: QpackEncoder::new(settings.qpack_max_table_capacity),
+            qpack_decoder: QpackDecoder::new(settings.qpack_max_table_capacity),
+            stream_manager: Http3StreamManager::new(),
+            settings,
+            stats: Http3Stats::default(),
+        }
+    }
+
+    /// Process incoming HTTP/3 frames with enhanced features
+    pub async fn process_frames(&mut self, stream_id: StreamId, data: &[u8]) -> Result<Vec<ProcessedFrame>> {
+        let mut processed_frames = Vec::new();
+        let mut buffer = BytesMut::from(data);
+
+        while buffer.has_remaining() {
+            match self.frame_parser.parse_frame(&mut buffer)? {
+                Some(frame) => {
+                    let processed = self.process_single_frame(stream_id, frame).await?;
+                    processed_frames.push(processed);
+                }
+                None => break, // Incomplete frame, need more data
+            }
+        }
+
+        self.stats.frames_processed += processed_frames.len() as u64;
+        Ok(processed_frames)
+    }
+
+    async fn process_single_frame(&mut self, stream_id: StreamId, frame: Http3Frame) -> Result<ProcessedFrame> {
+        let start_time = std::time::Instant::now();
+
+        let result = match frame {
+            Http3Frame::Headers { headers, fin, .. } => {
+                self.process_headers_frame(stream_id, headers, fin).await?
+            }
+            Http3Frame::Data { data, .. } => {
+                self.process_data_frame(stream_id, data).await?
+            }
+            Http3Frame::Settings { settings } => {
+                self.process_settings_frame(settings).await?
+            }
+            Http3Frame::GoAway { stream_id: goaway_stream } => {
+                self.process_goaway_frame(goaway_stream).await?
+            }
+            Http3Frame::CancelPush { push_id } => {
+                self.process_cancel_push_frame(push_id).await?
+            }
+            Http3Frame::MaxPushId { push_id } => {
+                self.process_max_push_id_frame(push_id).await?
+            }
+        };
+
+        let processing_time = start_time.elapsed();
+        self.stats.total_processing_time += processing_time;
+
+        Ok(ProcessedFrame {
+            stream_id,
+            frame_type: result.frame_type,
+            result: result.result,
+            processing_time,
+            qpack_operations: result.qpack_operations,
+        })
+    }
+
+    async fn process_headers_frame(&mut self, stream_id: StreamId, headers: Vec<Http3Header>, fin: bool) -> Result<FrameProcessingResult> {
+        // Decode QPACK headers
+        let decoded_headers = self.qpack_decoder.decode_headers(&headers)?;
+
+        // Update stream state
+        self.stream_manager.update_stream_headers(stream_id, &decoded_headers, fin)?;
+
+        // Check for HTTP semantics violations
+        self.validate_http_semantics(&decoded_headers)?;
+
+        Ok(FrameProcessingResult {
+            frame_type: Http3FrameType::Headers,
+            result: ProcessingResult::HeadersProcessed {
+                headers: decoded_headers,
+                stream_complete: fin,
+            },
+            qpack_operations: 1,
+        })
+    }
+
+    async fn process_data_frame(&mut self, stream_id: StreamId, data: Bytes) -> Result<FrameProcessingResult> {
+        // Update stream state and flow control
+        self.stream_manager.update_stream_data(stream_id, &data)?;
+
+        // Apply any content processing (compression, etc.)
+        let processed_data = self.process_content_encoding(&data)?;
+
+        Ok(FrameProcessingResult {
+            frame_type: Http3FrameType::Data,
+            result: ProcessingResult::DataProcessed {
+                data: processed_data,
+                bytes_received: data.len(),
+            },
+            qpack_operations: 0,
+        })
+    }
+
+    async fn process_settings_frame(&mut self, settings: HashMap<u64, u64>) -> Result<FrameProcessingResult> {
+        // Update connection settings
+        for (setting_id, value) in settings {
+            match setting_id {
+                0x01 => self.settings.qpack_max_table_capacity = value as usize,
+                0x06 => self.settings.max_header_list_size = Some(value as usize),
+                0x07 => self.settings.qpack_blocked_streams = value as usize,
+                _ => {
+                    // Unknown setting, ignore per HTTP/3 spec
+                    debug!("Ignoring unknown HTTP/3 setting: {}", setting_id);
+                }
+            }
+        }
+
+        Ok(FrameProcessingResult {
+            frame_type: Http3FrameType::Settings,
+            result: ProcessingResult::SettingsUpdated,
+            qpack_operations: 0,
+        })
+    }
+
+    async fn process_goaway_frame(&mut self, stream_id: StreamId) -> Result<FrameProcessingResult> {
+        // Mark connection for graceful shutdown
+        self.stream_manager.mark_goaway(stream_id)?;
+
+        Ok(FrameProcessingResult {
+            frame_type: Http3FrameType::GoAway,
+            result: ProcessingResult::GoAwayReceived { last_stream: stream_id },
+            qpack_operations: 0,
+        })
+    }
+
+    async fn process_cancel_push_frame(&mut self, push_id: u64) -> Result<FrameProcessingResult> {
+        // Cancel the specified push stream
+        self.stream_manager.cancel_push_stream(push_id)?;
+
+        Ok(FrameProcessingResult {
+            frame_type: Http3FrameType::CancelPush,
+            result: ProcessingResult::PushCancelled { push_id },
+            qpack_operations: 0,
+        })
+    }
+
+    async fn process_max_push_id_frame(&mut self, push_id: u64) -> Result<FrameProcessingResult> {
+        // Update maximum allowed push ID
+        self.stream_manager.update_max_push_id(push_id)?;
+
+        Ok(FrameProcessingResult {
+            frame_type: Http3FrameType::MaxPushId,
+            result: ProcessingResult::MaxPushIdUpdated { max_push_id: push_id },
+            qpack_operations: 0,
+        })
+    }
+
+    fn validate_http_semantics(&self, headers: &[DecodedHeader]) -> Result<()> {
+        // Validate required pseudo-headers
+        let mut has_method = false;
+        let mut has_path = false;
+        let mut has_scheme = false;
+        let mut has_authority = false;
+
+        for header in headers {
+            if header.name.starts_with(b":") {
+                match &header.name[..] {
+                    b":method" => has_method = true,
+                    b":path" => has_path = true,
+                    b":scheme" => has_scheme = true,
+                    b":authority" => has_authority = true,
+                    _ => {
+                        return Err(QuicError::Http3("Unknown pseudo-header".to_string()));
+                    }
+                }
+            }
+        }
+
+        // Check required headers for requests
+        if !has_method || !has_path || !has_scheme {
+            return Err(QuicError::Http3("Missing required pseudo-headers".to_string()));
+        }
+
+        Ok(())
+    }
+
+    fn process_content_encoding(&self, data: &Bytes) -> Result<Bytes> {
+        // Content encoding processing would go here
+        // For now, just return the data as-is
+        Ok(data.clone())
+    }
+
+    /// Encode and send HTTP/3 response
+    pub async fn send_response(&mut self, stream_id: StreamId, response: Http3Response) -> Result<Vec<u8>> {
+        let mut encoded_data = Vec::new();
+
+        // Encode headers with QPACK
+        let encoded_headers = self.qpack_encoder.encode_headers(&response.headers)?;
+        let headers_frame = Http3Frame::Headers {
+            stream_id,
+            headers: encoded_headers,
+            fin: response.body.is_empty(),
+        };
+
+        // Encode headers frame
+        encoded_data.extend(self.frame_parser.encode_frame(&headers_frame)?);
+
+        // Encode body if present
+        if !response.body.is_empty() {
+            let data_frame = Http3Frame::Data {
+                stream_id,
+                data: response.body,
+            };
+            encoded_data.extend(self.frame_parser.encode_frame(&data_frame)?);
+        }
+
+        self.stats.responses_sent += 1;
+        Ok(encoded_data)
+    }
+
+    pub fn stats(&self) -> Http3StatsSnapshot {
+        Http3StatsSnapshot {
+            frames_processed: self.stats.frames_processed,
+            responses_sent: self.stats.responses_sent,
+            qpack_operations: self.stats.qpack_operations,
+            total_processing_time: self.stats.total_processing_time,
+            active_streams: self.stream_manager.active_stream_count(),
+        }
+    }
+}
+
+/// HTTP/3 frame parser
+pub struct Http3FrameParser {
+    max_frame_size: usize,
+}
+
+impl Http3FrameParser {
+    pub fn new() -> Self {
+        Self {
+            max_frame_size: 1024 * 1024, // 1MB default
+        }
+    }
+
+    pub fn parse_frame(&self, buffer: &mut BytesMut) -> Result<Option<Http3Frame>> {
+        if buffer.len() < 2 {
+            return Ok(None); // Need at least frame type and length
+        }
+
+        // Parse variable-length frame type
+        let frame_type = self.read_varint(buffer)?;
+        let frame_length = self.read_varint(buffer)?;
+
+        if frame_length > self.max_frame_size as u64 {
+            return Err(QuicError::Http3("Frame too large".to_string()));
+        }
+
+        if buffer.len() < frame_length as usize {
+            return Ok(None); // Incomplete frame
+        }
+
+        let frame_data = buffer.split_to(frame_length as usize);
+        let frame_type = Http3FrameType::try_from(frame_type)?;
+
+        let frame = match frame_type {
+            Http3FrameType::Data => {
+                Http3Frame::Data {
+                    stream_id: StreamId::new(0), // Will be set by caller
+                    data: frame_data.freeze(),
+                }
+            }
+            Http3FrameType::Headers => {
+                let headers = self.parse_headers(&frame_data)?;
+                Http3Frame::Headers {
+                    stream_id: StreamId::new(0), // Will be set by caller
+                    headers,
+                    fin: false, // Will be determined by caller
+                }
+            }
+            Http3FrameType::Settings => {
+                let settings = self.parse_settings(&frame_data)?;
+                Http3Frame::Settings { settings }
+            }
+            Http3FrameType::GoAway => {
+                let mut data = frame_data.as_ref();
+                let stream_id = StreamId::new(self.read_varint_from_slice(&mut data)?);
+                Http3Frame::GoAway { stream_id }
+            }
+            Http3FrameType::CancelPush => {
+                let mut data = frame_data.as_ref();
+                let push_id = self.read_varint_from_slice(&mut data)?;
+                Http3Frame::CancelPush { push_id }
+            }
+            Http3FrameType::MaxPushId => {
+                let mut data = frame_data.as_ref();
+                let push_id = self.read_varint_from_slice(&mut data)?;
+                Http3Frame::MaxPushId { push_id }
+            }
+            _ => {
+                return Err(QuicError::Http3(format!("Unsupported frame type: {:?}", frame_type)));
+            }
+        };
+
+        Ok(Some(frame))
+    }
+
+    pub fn encode_frame(&self, frame: &Http3Frame) -> Result<Vec<u8>> {
+        let mut encoded = Vec::new();
+
+        match frame {
+            Http3Frame::Headers { headers, .. } => {
+                self.write_varint(&mut encoded, Http3FrameType::Headers as u64);
+                let header_data = self.encode_headers(headers)?;
+                self.write_varint(&mut encoded, header_data.len() as u64);
+                encoded.extend(header_data);
+            }
+            Http3Frame::Data { data, .. } => {
+                self.write_varint(&mut encoded, Http3FrameType::Data as u64);
+                self.write_varint(&mut encoded, data.len() as u64);
+                encoded.extend_from_slice(data);
+            }
+            Http3Frame::Settings { settings } => {
+                self.write_varint(&mut encoded, Http3FrameType::Settings as u64);
+                let settings_data = self.encode_settings(settings)?;
+                self.write_varint(&mut encoded, settings_data.len() as u64);
+                encoded.extend(settings_data);
+            }
+            _ => {
+                return Err(QuicError::Http3("Frame encoding not implemented".to_string()));
+            }
+        }
+
+        Ok(encoded)
+    }
+
+    fn read_varint(&self, buffer: &mut BytesMut) -> Result<u64> {
+        if buffer.is_empty() {
+            return Err(QuicError::Http3("Buffer underflow reading varint".to_string()));
+        }
+
+        let first_byte = buffer[0];
+        let length = match first_byte >> 6 {
+            0 => 1,
+            1 => 2,
+            2 => 4,
+            3 => 8,
+            _ => unreachable!(),
+        };
+
+        if buffer.len() < length {
+            return Err(QuicError::Http3("Buffer underflow reading varint".to_string()));
+        }
+
+        let mut value = (first_byte & 0x3F) as u64;
+        for i in 1..length {
+            value = (value << 8) | buffer[i] as u64;
+        }
+
+        buffer.advance(length);
+        Ok(value)
+    }
+
+    fn read_varint_from_slice(&self, data: &mut &[u8]) -> Result<u64> {
+        if data.is_empty() {
+            return Err(QuicError::Http3("Buffer underflow reading varint".to_string()));
+        }
+
+        let first_byte = data[0];
+        let length = match first_byte >> 6 {
+            0 => 1,
+            1 => 2,
+            2 => 4,
+            3 => 8,
+            _ => unreachable!(),
+        };
+
+        if data.len() < length {
+            return Err(QuicError::Http3("Buffer underflow reading varint".to_string()));
+        }
+
+        let mut value = (first_byte & 0x3F) as u64;
+        for i in 1..length {
+            value = (value << 8) | data[i] as u64;
+        }
+
+        *data = &data[length..];
+        Ok(value)
+    }
+
+    fn write_varint(&self, buffer: &mut Vec<u8>, value: u64) {
+        if value < 64 {
+            buffer.push(value as u8);
+        } else if value < 16384 {
+            buffer.push(0x40 | (value >> 8) as u8);
+            buffer.push(value as u8);
+        } else if value < 1073741824 {
+            buffer.push(0x80 | (value >> 24) as u8);
+            buffer.push((value >> 16) as u8);
+            buffer.push((value >> 8) as u8);
+            buffer.push(value as u8);
+        } else {
+            buffer.push(0xC0 | (value >> 56) as u8);
+            buffer.extend_from_slice(&(value as u64).to_be_bytes()[1..]);
+        }
+    }
+
+    fn parse_headers(&self, data: &[u8]) -> Result<Vec<Http3Header>> {
+        // Simplified header parsing - in practice this would use QPACK
+        Ok(vec![])
+    }
+
+    fn encode_headers(&self, headers: &[Http3Header]) -> Result<Vec<u8>> {
+        // Simplified header encoding - in practice this would use QPACK
+        Ok(vec![])
+    }
+
+    fn parse_settings(&self, data: &[u8]) -> Result<HashMap<u64, u64>> {
+        let mut settings = HashMap::new();
+        let mut remaining = data;
+
+        while !remaining.is_empty() {
+            let setting_id = self.read_varint_from_slice(&mut remaining)?;
+            let value = self.read_varint_from_slice(&mut remaining)?;
+            settings.insert(setting_id, value);
+        }
+
+        Ok(settings)
+    }
+
+    fn encode_settings(&self, settings: &HashMap<u64, u64>) -> Result<Vec<u8>> {
+        let mut encoded = Vec::new();
+
+        for (&setting_id, &value) in settings {
+            self.write_varint(&mut encoded, setting_id);
+            self.write_varint(&mut encoded, value);
+        }
+
+        Ok(encoded)
+    }
+}
+
+/// QPACK encoder for header compression
+pub struct QpackEncoder {
+    max_table_capacity: usize,
+    dynamic_table: Vec<(Bytes, Bytes)>,
+}
+
+impl QpackEncoder {
+    pub fn new(max_table_capacity: usize) -> Self {
+        Self {
+            max_table_capacity,
+            dynamic_table: Vec::new(),
+        }
+    }
+
+    pub fn encode_headers(&mut self, headers: &[DecodedHeader]) -> Result<Vec<Http3Header>> {
+        // Simplified QPACK encoding
+        let mut encoded_headers = Vec::new();
+
+        for header in headers {
+            encoded_headers.push(Http3Header {
+                name: header.name.clone(),
+                value: header.value.clone(),
+            });
+        }
+
+        Ok(encoded_headers)
+    }
+}
+
+/// QPACK decoder for header decompression
+pub struct QpackDecoder {
+    max_table_capacity: usize,
+    dynamic_table: Vec<(Bytes, Bytes)>,
+}
+
+impl QpackDecoder {
+    pub fn new(max_table_capacity: usize) -> Self {
+        Self {
+            max_table_capacity,
+            dynamic_table: Vec::new(),
+        }
+    }
+
+    pub fn decode_headers(&mut self, headers: &[Http3Header]) -> Result<Vec<DecodedHeader>> {
+        // Simplified QPACK decoding
+        let mut decoded_headers = Vec::new();
+
+        for header in headers {
+            decoded_headers.push(DecodedHeader {
+                name: header.name.clone(),
+                value: header.value.clone(),
+            });
+        }
+
+        Ok(decoded_headers)
+    }
+}
+
+/// HTTP/3 stream manager
+pub struct Http3StreamManager {
+    active_streams: HashMap<StreamId, Http3StreamState>,
+    max_push_id: u64,
+    goaway_received: bool,
+}
+
+impl Http3StreamManager {
+    pub fn new() -> Self {
+        Self {
+            active_streams: HashMap::new(),
+            max_push_id: 0,
+            goaway_received: false,
+        }
+    }
+
+    pub fn update_stream_headers(&mut self, stream_id: StreamId, headers: &[DecodedHeader], fin: bool) -> Result<()> {
+        let state = self.active_streams.entry(stream_id).or_insert(Http3StreamState::new());
+        state.headers_received = true;
+        if fin {
+            state.complete = true;
+        }
+        Ok(())
+    }
+
+    pub fn update_stream_data(&mut self, stream_id: StreamId, data: &Bytes) -> Result<()> {
+        let state = self.active_streams.entry(stream_id).or_insert(Http3StreamState::new());
+        state.bytes_received += data.len();
+        Ok(())
+    }
+
+    pub fn mark_goaway(&mut self, stream_id: StreamId) -> Result<()> {
+        self.goaway_received = true;
+        Ok(())
+    }
+
+    pub fn cancel_push_stream(&mut self, push_id: u64) -> Result<()> {
+        // Cancel push stream implementation
+        Ok(())
+    }
+
+    pub fn update_max_push_id(&mut self, push_id: u64) -> Result<()> {
+        self.max_push_id = push_id;
+        Ok(())
+    }
+
+    pub fn active_stream_count(&self) -> usize {
+        self.active_streams.len()
+    }
+}
+
+/// HTTP/3 stream state
+#[derive(Debug)]
+pub struct Http3StreamState {
+    pub headers_received: bool,
+    pub bytes_received: usize,
+    pub complete: bool,
+}
+
+impl Http3StreamState {
+    pub fn new() -> Self {
+        Self {
+            headers_received: false,
+            bytes_received: 0,
+            complete: false,
+        }
+    }
+}
+
+/// HTTP/3 settings
+#[derive(Debug, Clone)]
+pub struct Http3Settings {
+    pub qpack_max_table_capacity: usize,
+    pub max_header_list_size: Option<usize>,
+    pub qpack_blocked_streams: usize,
+}
+
+impl Default for Http3Settings {
+    fn default() -> Self {
+        Self {
+            qpack_max_table_capacity: 4096,
+            max_header_list_size: None,
+            qpack_blocked_streams: 100,
+        }
+    }
+}
+
+/// Processed HTTP/3 frame
+#[derive(Debug)]
+pub struct ProcessedFrame {
+    pub stream_id: StreamId,
+    pub frame_type: Http3FrameType,
+    pub result: ProcessingResult,
+    pub processing_time: std::time::Duration,
+    pub qpack_operations: u64,
+}
+
+/// Frame processing result
+#[derive(Debug)]
+pub struct FrameProcessingResult {
+    pub frame_type: Http3FrameType,
+    pub result: ProcessingResult,
+    pub qpack_operations: u64,
+}
+
+/// Processing result types
+#[derive(Debug)]
+pub enum ProcessingResult {
+    HeadersProcessed {
+        headers: Vec<DecodedHeader>,
+        stream_complete: bool,
+    },
+    DataProcessed {
+        data: Bytes,
+        bytes_received: usize,
+    },
+    SettingsUpdated,
+    GoAwayReceived {
+        last_stream: StreamId,
+    },
+    PushCancelled {
+        push_id: u64,
+    },
+    MaxPushIdUpdated {
+        max_push_id: u64,
+    },
+}
+
+/// Decoded header
+#[derive(Debug, Clone)]
+pub struct DecodedHeader {
+    pub name: Bytes,
+    pub value: Bytes,
+}
+
+/// HTTP/3 response
+#[derive(Debug)]
+pub struct Http3Response {
+    pub status: u16,
+    pub headers: Vec<DecodedHeader>,
+    pub body: Bytes,
+}
+
+/// HTTP/3 processing statistics
+#[derive(Debug, Default)]
+pub struct Http3Stats {
+    pub frames_processed: u64,
+    pub responses_sent: u64,
+    pub qpack_operations: u64,
+    pub total_processing_time: std::time::Duration,
+}
+
+/// HTTP/3 statistics snapshot
+#[derive(Debug, Clone)]
+pub struct Http3StatsSnapshot {
+    pub frames_processed: u64,
+    pub responses_sent: u64,
+    pub qpack_operations: u64,
+    pub total_processing_time: std::time::Duration,
+    pub active_streams: usize,
+}
+
 /// HTTP/3 request
 #[derive(Debug, Clone)]
 pub struct Http3Request {

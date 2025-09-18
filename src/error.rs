@@ -12,6 +12,9 @@ pub enum QuicError {
     
     #[error("Connection closed")]
     ConnectionClosed,
+
+    #[error("Idle timeout")]
+    IdleTimeout,
     
     #[error("Invalid packet: {0}")]
     InvalidPacket(String),
