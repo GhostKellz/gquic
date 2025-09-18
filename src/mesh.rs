@@ -296,7 +296,7 @@ impl GQuicMeshEndpoint {
 
         let peers = self.peers.read().await;
         let peer = peers.get(&peer_id)
-            .ok_or_else(|| QuicError::Protocol(format!("Peer {} not found", peer_id)))?;
+            .ok_or_else(|| QuicError::Protocol(crate::quic::error::ProtocolError::InvalidPacketFormat(format!("Peer {} not found", peer_id))))?;
 
         // Try each address in order
         for addr in &peer.addresses {
@@ -331,7 +331,7 @@ impl GQuicMeshEndpoint {
             error: error_msg.clone(),
         });
 
-        Err(QuicError::Protocol(error_msg))
+        Err(QuicError::Protocol(crate::quic::error::ProtocolError::InvalidPacketFormat(error_msg)))
     }
 
     /// Attempt connection to a specific address
@@ -339,7 +339,7 @@ impl GQuicMeshEndpoint {
         // For now, create a simple connection
         // In a full implementation, this would handle the full QUIC handshake
         let connection_id = ConnectionId::new();
-        let connection = Connection::new(connection_id, addr, self.socket.clone());
+        let connection = Connection::new(connection_id, addr, self.socket.clone(), true);
         Ok(connection)
     }
 
@@ -363,16 +363,16 @@ impl GQuicMeshEndpoint {
 
         let peers = self.peers.read().await;
         let peer = peers.get(peer_id)
-            .ok_or_else(|| QuicError::Protocol(format!("Peer {} not found", peer_id)))?;
+            .ok_or_else(|| QuicError::Protocol(crate::quic::error::ProtocolError::InvalidPacketFormat(format!("Peer {} not found", peer_id))))?;
 
         if peer.connections.is_empty() {
-            return Err(QuicError::Protocol(format!("No connections to peer {}", peer_id)));
+            return Err(QuicError::Protocol(crate::quic::error::ProtocolError::InvalidState(format!("No connections to peer {}", peer_id))));
         }
 
         // Send on the first available connection
         // In a real implementation, this would use load balancing
         let connection = &peer.connections[0];
-        connection.send_data(data).await?;
+        connection.send_data(&data).await?;
 
         Ok(())
     }
@@ -502,7 +502,7 @@ impl GQuicMeshEndpoint {
             }
         }
 
-        Err(QuicError::Protocol(format!("Cannot resolve hostname: {}", hostname)))
+        Err(QuicError::Protocol(crate::quic::error::ProtocolError::InvalidState(format!("Cannot resolve hostname: {}", hostname))))
     }
 
     /// Shutdown the mesh endpoint
@@ -518,7 +518,7 @@ impl GQuicMeshEndpoint {
         let mut peers = self.peers.write().await;
         for (peer_id, peer) in peers.iter_mut() {
             for connection in &peer.connections {
-                if let Err(e) = connection.close().await {
+                if let Err(e) = connection.close(0, "Mesh network shutdown").await {
                     warn!("Error closing connection to {}: {}", peer_id, e);
                 }
             }

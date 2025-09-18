@@ -231,18 +231,23 @@ impl JitterBuffer {
 
     /// Get next packet if available and timing is right
     pub fn get_next_packet(&mut self) -> Option<Vec<u8>> {
-        if let Some((seq, (arrival_time, data))) = self.buffer.first_key_value() {
+        // Check first entry without borrowing immutably
+        let should_release = if let Some((seq, (arrival_time, _))) = self.buffer.first_key_value() {
             let delay = arrival_time.elapsed();
+            *seq == self.next_expected || delay >= self.max_delay
+        } else {
+            false
+        };
 
-            // Release packet if delay exceeds threshold or it's the expected packet
-            if *seq == self.next_expected || delay >= self.max_delay {
-                let (_, (_, packet_data)) = self.buffer.pop_first().unwrap();
-                self.next_expected = (*seq).max(self.next_expected) + 1;
+        if should_release {
+            if let Some((seq, (arrival_time, packet_data))) = self.buffer.pop_first() {
+                let delay = arrival_time.elapsed();
+                self.next_expected = seq.max(self.next_expected) + 1;
 
                 // Update adaptive delay if enabled
                 if self.adaptive_size && delay < self.max_delay {
                     self.stats.average_delay = Duration::from_nanos(
-                        (self.stats.average_delay.as_nanos() + delay.as_nanos()) / 2
+                        ((self.stats.average_delay.as_nanos() + delay.as_nanos()) / 2) as u64
                     );
                 }
 
@@ -352,10 +357,11 @@ impl CheatDetectionAlgorithm for SpeedHackDetector {
     fn analyze_player(&self, profile: &PlayerProfile, current_action: &GameEvent) -> f32 {
         if let GameEvent::PlayerMove { position, .. } = current_action {
             if let Some(last_sample) = profile.movement_patterns.last() {
-                let time_diff = position.timestamp
-                    .duration_since(last_sample.timestamp.into())
+                let time_diff = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_secs_f32();
+                    .as_secs_f32() -
+                    last_sample.timestamp.elapsed().as_secs_f32();
 
                 if time_diff > 0.0 {
                     let distance = ((position.x - last_sample.position.x).powi(2) +
@@ -570,7 +576,7 @@ impl AntiCheatEngine {
 }
 
 /// Gaming statistics
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct GamingStats {
     pub active_connections: usize,
     pub average_latency: Duration,
@@ -642,7 +648,7 @@ impl GamingConnectionManager {
             if let Some(gaming_conn) = connections.get(connection_id) {
                 gaming_conn.player_id.clone()
             } else {
-                return Err(QuicError::ConnectionNotFound);
+                return Err(QuicError::ConnectionNotFound("Connection not found for player".to_string()));
             }
         };
 
@@ -659,7 +665,7 @@ impl GamingConnectionManager {
 
     /// Get gaming statistics
     pub fn stats(&self) -> GamingStats {
-        self.stats.read().unwrap().clone()
+        (*self.stats.read().unwrap()).clone()
     }
 
     /// Optimize connection for gaming

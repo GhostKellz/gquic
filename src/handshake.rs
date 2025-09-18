@@ -64,7 +64,7 @@ impl QuicHandshake {
     pub fn new_client(connection_id: ConnectionId, server_name: String) -> Result<Self> {
         let backend = default_crypto_backend();
         let crypto = QuicCrypto::new(backend.clone());
-        let mut packet_protection = PacketProtection::new(backend);
+        let mut packet_protection = PacketProtection::new();
 
         // Initialize keys for Initial encryption level
         packet_protection.initialize_keys(connection_id.as_bytes(), false)?;
@@ -90,7 +90,7 @@ impl QuicHandshake {
     pub fn new_server(connection_id: ConnectionId, private_key: PrivateKey, cert_chain: Vec<Vec<u8>>) -> Result<Self> {
         let backend = default_crypto_backend();
         let crypto = QuicCrypto::new(backend.clone());
-        let mut packet_protection = PacketProtection::new(backend);
+        let mut packet_protection = PacketProtection::new();
 
         // Initialize keys for Initial encryption level
         packet_protection.initialize_keys(connection_id.as_bytes(), true)?;
@@ -400,6 +400,29 @@ impl QuicHandshake {
     /// Get local transport parameters
     pub fn local_transport_params(&self) -> &TransportParameters {
         &self.local_transport_params
+    }
+
+    /// Check if handshake is established
+    pub fn is_established(&self) -> bool {
+        matches!(self.state, HandshakeState::Complete)
+    }
+
+    /// Encrypt data using current handshake keys
+    pub fn encrypt_data(&self, level: EncryptionLevel, data: &[u8]) -> Result<Vec<u8>> {
+        // TODO: Implement proper key extraction for the encryption level
+        // For now, generate a placeholder key
+        let key = vec![0u8; 32]; // Placeholder encryption key
+        let nonce = self.crypto.generate_nonce()?;
+        self.crypto.backend().encrypt(&key, &nonce, data)
+    }
+
+    /// Decrypt data using current handshake keys
+    pub fn decrypt_data(&self, level: EncryptionLevel, data: &[u8]) -> Result<Vec<u8>> {
+        // TODO: Implement proper key extraction for the decryption level
+        // For now, generate a placeholder key
+        let key = vec![0u8; 32]; // Placeholder decryption key
+        let nonce = self.crypto.generate_nonce()?;
+        self.crypto.backend().decrypt(&key, &nonce, data)
     }
 }
 

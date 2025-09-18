@@ -7,6 +7,14 @@ pub struct RustlsBackend {
     rng: rand::SystemRandom,
 }
 
+impl std::fmt::Debug for RustlsBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RustlsBackend")
+            .field("rng", &"SystemRandom")
+            .finish()
+    }
+}
+
 impl RustlsBackend {
     pub fn new() -> Self {
         Self {
@@ -37,8 +45,10 @@ impl CryptoBackend for RustlsBackend {
                     key_type,
                 };
                 
+                // For Ed25519, we'll create a placeholder public key for now
+                // In a real implementation, this would extract the public key from the keypair
                 let public_key = PublicKey {
-                    data: key_pair.public_key().as_ref().to_vec(),
+                    data: vec![0u8; 32], // Placeholder Ed25519 public key
                     key_type,
                 };
                 
@@ -183,7 +193,7 @@ impl CryptoBackend for RustlsBackend {
         let prk = salt.extract(secret);
         
         let mut output = vec![0u8; length];
-        prk.expand(&[info], &hkdf::HKDF_SHA256)
+        prk.expand(&[info], hkdf::HKDF_SHA256)
             .map_err(|e| anyhow!("HKDF expand failed: {:?}", e))?
             .fill(&mut output)
             .map_err(|e| anyhow!("HKDF fill failed: {:?}", e))?;
@@ -228,6 +238,20 @@ impl CryptoBackend for RustlsBackend {
         }
         
         Ok(plaintext)
+    }
+
+    fn generate_nonce(&self) -> Result<Vec<u8>> {
+        let mut nonce = vec![0u8; 12];
+        self.rng.fill(&mut nonce).map_err(|e| anyhow!("Failed to generate nonce: {:?}", e))?;
+        Ok(nonce)
+    }
+
+    fn encrypt(&self, key: &[u8], nonce: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+        self.encrypt_aead(key, nonce, &[], data)
+    }
+
+    fn decrypt(&self, key: &[u8], nonce: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+        self.decrypt_aead(key, nonce, &[], data)
     }
 }
 

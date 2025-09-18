@@ -197,4 +197,26 @@ impl CryptoBackend for RingBackend {
             Err(anyhow::anyhow!("Ring backend not available"))
         }
     }
+
+    fn generate_nonce(&self) -> anyhow::Result<Vec<u8>> {
+        #[cfg(feature = "ring-crypto")]
+        {
+            let mut nonce = vec![0u8; 12];
+            let mut rng = OsRng;
+            rng.fill_bytes(&mut nonce);
+            Ok(nonce)
+        }
+        #[cfg(not(feature = "ring-crypto"))]
+        {
+            Err(anyhow::anyhow!("Ring backend not available"))
+        }
+    }
+
+    fn encrypt(&self, key: &[u8], nonce: &[u8], plaintext: &[u8]) -> anyhow::Result<Vec<u8>> {
+        self.encrypt_aead(key, nonce, &[], plaintext)
+    }
+
+    fn decrypt(&self, key: &[u8], nonce: &[u8], ciphertext: &[u8]) -> anyhow::Result<Vec<u8>> {
+        self.decrypt_aead(key, nonce, &[], ciphertext)
+    }
 }

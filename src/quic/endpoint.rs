@@ -101,7 +101,7 @@ impl Endpoint {
     
     /// Get the local socket address
     pub fn local_addr(&self) -> Result<SocketAddr> {
-        self.socket.local_addr().map_err(|e| QuicError::Io(e))
+        self.socket.local_addr().map_err(|e| QuicError::Io(e.to_string()))
     }
     
     /// Connect to a remote endpoint (client only)
@@ -183,7 +183,7 @@ impl Endpoint {
     
     /// Handle an incoming packet
     async fn handle_packet(&self, data: Bytes, remote_addr: SocketAddr) -> Result<()> {
-        let packet = match Packet::decode(data) {
+        let packet = match Packet::decode(&data) {
             Ok(packet) => packet,
             Err(e) => {
                 debug!("Failed to decode packet from {}: {}", remote_addr, e);
@@ -259,6 +259,10 @@ impl Endpoint {
             connection_id: Bytes::copy_from_slice(connection_id.as_bytes()),
             packet_number: PacketNumber::new(0),
             version: Some(1), // QUIC version 1
+            source_connection_id: Some(Bytes::copy_from_slice(connection_id.as_bytes())),
+            destination_connection_id: Some(Bytes::copy_from_slice(connection_id.as_bytes())),
+            token: None,
+            length: Some(0),
         };
         
         // For now, send an empty payload - in real implementation this would contain TLS ClientHello

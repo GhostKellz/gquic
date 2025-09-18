@@ -20,7 +20,7 @@ impl Packet {
         }
         
         // Very basic parsing - just extract first 4 bytes as connection ID
-        let conn_id = ConnectionId::new(data[0..4].to_vec());
+        let conn_id = ConnectionId::from_bytes(&data[0..4]);
         let packet_data = Bytes::copy_from_slice(data);
         
         Ok(Self::new(conn_id, packet_data))
@@ -36,7 +36,7 @@ impl Packet {
         let decrypted: Vec<u8> = data.iter().zip(key.iter().cycle()).map(|(d, k)| d ^ k).collect();
         
         // Extract connection ID from decrypted data
-        let conn_id = ConnectionId::new(decrypted[0..4].to_vec());
+        let conn_id = ConnectionId::from_bytes(&decrypted[0..4]);
         let packet_data = Bytes::copy_from_slice(&decrypted);
         
         Ok(Self::new(conn_id, packet_data))

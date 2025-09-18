@@ -50,7 +50,7 @@ impl Endpoint {
         
         // For now, just create a basic connection
         let conn_id = packet.connection_id();
-        let conn = Connection::new(conn_id.clone(), addr, self.socket.clone());
+        let conn = Connection::new(conn_id.clone(), addr, self.socket.clone(), false);
         
         self.connections.insert(conn_id, conn.clone());
         Ok(conn)

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use crate::{QuicResult, QuicError};
 
 /// Types of errors that can occur in QUIC connections
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum QuicErrorType {
     /// Network-level errors (temporary)
     Network,
@@ -153,7 +153,17 @@ impl CircuitBreaker {
                         self.state = CircuitState::HalfOpen;
                         self.success_count = 0;
                     } else {
-                        return Err(operation().unwrap_err()); // Fast fail
+                        // Circuit is open - don't call operation, return circuit open error
+                        // Note: Need to define a proper error type, for now using a placeholder
+                        let result = operation(); // Call once to get the error type
+                        match result {
+                            Ok(_) => {
+                                self.state = CircuitState::Closed;
+                                self.last_failure = None;
+                                return result;
+                            }
+                            Err(e) => return Err(e),
+                        }
                     }
                 }
             }

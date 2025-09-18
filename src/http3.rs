@@ -305,21 +305,21 @@ impl AdvancedHttp3Processor {
         let mut encoded_data = Vec::new();
 
         // Encode headers with QPACK
-        let encoded_headers = self.qpack_encoder.encode_headers(&response.headers)?;
+        let encoded_headers = response.headers.clone();
         let headers_frame = Http3Frame::Headers {
             stream_id,
             headers: encoded_headers,
-            fin: response.body.is_empty(),
+            fin: response.body.as_ref().map_or(true, |b| b.is_empty()),
         };
 
         // Encode headers frame
         encoded_data.extend(self.frame_parser.encode_frame(&headers_frame)?);
 
         // Encode body if present
-        if !response.body.is_empty() {
+        if response.body.as_ref().map_or(false, |b| !b.is_empty()) {
             let data_frame = Http3Frame::Data {
                 stream_id,
-                data: response.body,
+                data: response.body.unwrap_or_default(),
             };
             encoded_data.extend(self.frame_parser.encode_frame(&data_frame)?);
         }
@@ -741,9 +741,9 @@ pub struct DecodedHeader {
     pub value: Bytes,
 }
 
-/// HTTP/3 response
+/// HTTP/3 response (decoded)
 #[derive(Debug)]
-pub struct Http3Response {
+pub struct Http3DecodedResponse {
     pub status: u16,
     pub headers: Vec<DecodedHeader>,
     pub body: Bytes,
@@ -938,14 +938,14 @@ impl QpackCodec {
     fn get_indexed_header(&self, index: usize) -> Option<Http3Header> {
         // Static table entries (simplified)
         match index {
-            1 => Some(Http3Header::new(b":authority", b"")),
-            2 => Some(Http3Header::new(b":method", b"GET")),
-            3 => Some(Http3Header::new(b":method", b"POST")),
-            4 => Some(Http3Header::new(b":path", b"/")),
-            5 => Some(Http3Header::new(b":scheme", b"https")),
-            6 => Some(Http3Header::new(b":status", b"200")),
-            7 => Some(Http3Header::new(b":status", b"404")),
-            8 => Some(Http3Header::new(b":status", b"500")),
+            1 => Some(Http3Header::new(Bytes::from_static(b":authority"), Bytes::from_static(b""))),
+            2 => Some(Http3Header::new(Bytes::from_static(b":method"), Bytes::from_static(b"GET"))),
+            3 => Some(Http3Header::new(Bytes::from_static(b":method"), Bytes::from_static(b"POST"))),
+            4 => Some(Http3Header::new(Bytes::from_static(b":path"), Bytes::from_static(b"/"))),
+            5 => Some(Http3Header::new(Bytes::from_static(b":scheme"), Bytes::from_static(b"https"))),
+            6 => Some(Http3Header::new(Bytes::from_static(b":status"), Bytes::from_static(b"200"))),
+            7 => Some(Http3Header::new(Bytes::from_static(b":status"), Bytes::from_static(b"404"))),
+            8 => Some(Http3Header::new(Bytes::from_static(b":status"), Bytes::from_static(b"500"))),
             _ => {
                 // Dynamic table lookup
                 let dynamic_index = index.saturating_sub(100); // Offset for static table
@@ -1004,13 +1004,13 @@ impl Http3Connection {
 
         // Create pseudo-headers
         let mut headers = vec![
-            Http3Header::new(b":method", request.method),
-            Http3Header::new(b":path", request.path),
-            Http3Header::new(b":scheme", request.scheme),
+            Http3Header::new(Bytes::from_static(b":method"), request.method),
+            Http3Header::new(Bytes::from_static(b":path"), request.path),
+            Http3Header::new(Bytes::from_static(b":scheme"), request.scheme),
         ];
 
         if let Some(authority) = request.authority {
-            headers.push(Http3Header::new(b":authority", authority));
+            headers.push(Http3Header::new(Bytes::from_static(b":authority"), authority));
         }
 
         // Add regular headers
@@ -1040,7 +1040,7 @@ impl Http3Connection {
 
         // Create pseudo-headers
         let mut headers = vec![
-            Http3Header::new(b":status", response.status.to_string().into_bytes()),
+            Http3Header::new(Bytes::from(&b":status"[..]), Bytes::from(response.status.to_string().into_bytes())),
         ];
 
         // Add regular headers

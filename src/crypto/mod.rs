@@ -22,10 +22,15 @@ pub trait CryptoBackend: Send + Sync + std::fmt::Debug {
     // AEAD encryption/decryption for packet protection
     fn encrypt_aead(&self, key: &[u8], nonce: &[u8], aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>>;
     fn decrypt_aead(&self, key: &[u8], nonce: &[u8], aad: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>>;
+
+    // Additional methods for compatibility
+    fn generate_nonce(&self) -> Result<Vec<u8>>;
+    fn encrypt(&self, key: &[u8], nonce: &[u8], data: &[u8]) -> Result<Vec<u8>>;
+    fn decrypt(&self, key: &[u8], nonce: &[u8], data: &[u8]) -> Result<Vec<u8>>;
 }
 
 /// Supported cryptographic key types
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum KeyType {
     Ed25519,
     Secp256r1,
@@ -33,17 +38,52 @@ pub enum KeyType {
 }
 
 /// Public key with associated algorithm
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PublicKey {
     pub data: Vec<u8>,
     pub key_type: KeyType,
 }
 
+impl PublicKey {
+    /// Create new public key with default Ed25519 type
+    pub fn new(data: Vec<u8>) -> Self {
+        Self {
+            data,
+            key_type: KeyType::Ed25519,
+        }
+    }
+
+    /// Create new public key with specified type
+    pub fn with_type(data: Vec<u8>, key_type: KeyType) -> Self {
+        Self { data, key_type }
+    }
+
+    /// Get the key data as bytes
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.data
+    }
+}
+
 /// Private key with associated algorithm
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PrivateKey {
     pub data: Vec<u8>,
     pub key_type: KeyType,
+}
+
+impl PrivateKey {
+    /// Create new private key with default Ed25519 type
+    pub fn new(data: Vec<u8>) -> Self {
+        Self {
+            data,
+            key_type: KeyType::Ed25519,
+        }
+    }
+
+    /// Create new private key with specified type
+    pub fn with_type(data: Vec<u8>, key_type: KeyType) -> Self {
+        Self { data, key_type }
+    }
 }
 
 /// Cryptographic key pair
@@ -55,7 +95,7 @@ pub struct KeyPair {
 }
 
 /// Digital signature with type information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Signature {
     pub data: Vec<u8>,
     pub signature_type: SignatureType,
@@ -66,7 +106,7 @@ pub struct Signature {
 pub struct SharedSecret(pub [u8; 32]);
 
 /// Signature algorithm types
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SignatureType {
     Ed25519,
     EcdsaSecp256r1Sha256,

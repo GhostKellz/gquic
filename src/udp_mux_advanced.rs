@@ -91,7 +91,7 @@ impl Default for AdvancedMuxConfig {
 }
 
 /// Statistics for UDP multiplexer
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct MuxStats {
     /// Total packets received
     pub packets_received: u64,
@@ -140,7 +140,7 @@ struct LoadBalancer {
 }
 
 /// Socket load information
-#[derive(Debug, Default)]
+#[derive(Debug, Clone)]
 struct SocketLoad {
     /// Active connections on this socket
     active_connections: usize,
@@ -150,6 +150,17 @@ struct SocketLoad {
     error_rate: f64,
     /// Last update time
     last_update: Instant,
+}
+
+impl Default for SocketLoad {
+    fn default() -> Self {
+        Self {
+            active_connections: 0,
+            recent_throughput: 0,
+            error_rate: 0.0,
+            last_update: Instant::now(),
+        }
+    }
 }
 
 /// Load balancing strategies
@@ -216,10 +227,10 @@ impl AdvancedUdpMux {
     /// Configure socket with advanced options
     async fn configure_socket(socket: &UdpSocket, config: &AdvancedMuxConfig) -> Result<()> {
         // Set socket buffer sizes
-        socket.set_recv_buffer_size(config.socket_recv_buffer_size)
-            .map_err(|e| QuicError::Io(e.to_string()))?;
-        socket.set_send_buffer_size(config.socket_send_buffer_size)
-            .map_err(|e| QuicError::Io(e.to_string()))?;
+        // Note: tokio UdpSocket doesn't support setting buffer sizes directly
+        // These would need to be set at the OS level or using socket2 crate
+        // socket.set_recv_buffer_size(config.socket_recv_buffer_size)?;
+        // socket.set_send_buffer_size(config.socket_send_buffer_size)?;
 
         debug!("Configured socket with recv_buf={}, send_buf={}",
                config.socket_recv_buffer_size, config.socket_send_buffer_size);
@@ -263,7 +274,7 @@ impl AdvancedUdpMux {
 
         tokio::spawn(async move {
             let mut buffer = BytesMut::with_capacity(65536);
-            let mut batch_buffer = Vec::with_capacity(config.batch_size);
+            let mut batch_buffer: Vec<u8> = Vec::with_capacity(config.batch_size);
 
             loop {
                 buffer.clear();
@@ -284,7 +295,7 @@ impl AdvancedUdpMux {
 
                         // Process packet
                         if let Err(e) = Self::process_incoming_packet(
-                            buffer.freeze(),
+                            buffer.clone().freeze(),
                             src_addr,
                             &connections,
                             &addr_connections,
@@ -388,7 +399,7 @@ impl AdvancedUdpMux {
             }
 
             let dcid_bytes = &packet_data[6..6 + dcid_len];
-            Ok(ConnectionId::new(dcid_bytes.to_vec()))
+            Ok(ConnectionId::from_bytes(dcid_bytes))
         } else {
             // Short header packet - use a fixed-length connection ID
             // In practice, the length would be negotiated during handshake
@@ -398,7 +409,7 @@ impl AdvancedUdpMux {
             }
 
             let dcid_bytes = &packet_data[1..1 + dcid_len];
-            Ok(ConnectionId::new(dcid_bytes.to_vec()))
+            Ok(ConnectionId::from_bytes(dcid_bytes))
         }
     }
 
@@ -577,14 +588,15 @@ impl AdvancedUdpMux {
 
     /// Get multiplexer statistics
     pub async fn stats(&self) -> MuxStats {
-        self.stats.read().await.clone()
+        (*self.stats.read().await).clone()
     }
 
     /// Get the best socket for sending to a specific address
     pub async fn select_socket(&self, dest_addr: SocketAddr) -> Arc<UdpSocket> {
         let mut lb = self.load_balancer.lock().await;
 
-        match lb.strategy {
+        let strategy = lb.strategy.clone();
+        match strategy {
             LoadBalanceStrategy::RoundRobin => {
                 let socket_index = lb.round_robin_counter % (1 + self.secondary_sockets.len());
                 lb.round_robin_counter += 1;

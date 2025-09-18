@@ -112,6 +112,71 @@ pub struct WireGuardInterface {
     pub last_activity: Instant,
 }
 
+impl WireGuardInterface {
+    /// Create a new WireGuard interface
+    pub async fn new(config: WireGuardConfig) -> Result<Self> {
+        use std::collections::HashMap;
+        use std::time::SystemTime;
+
+        // Generate interface name
+        let interface_name = format!("{}-{}", config.interface_prefix, rand::random::<u32>());
+
+        // Generate WireGuard keys
+        let private_key = format!("wg_private_key_{}", rand::random::<u64>());
+        let public_key = format!("wg_public_key_{}", rand::random::<u64>());
+
+        Ok(Self {
+            name: interface_name,
+            address: "10.0.0.1".parse().unwrap(), // Default interface address
+            subnet: "10.0.0.0/24".to_string(),
+            private_key,
+            public_key,
+            listen_port: config.wireguard_port,
+            peers: HashMap::new(),
+            state: InterfaceState::Creating,
+            created_at: SystemTime::now(),
+            last_activity: Instant::now(),
+        })
+    }
+
+    /// Connect to a peer
+    pub async fn connect_peer(&self, peer_id: &str, endpoint: SocketAddr) -> Result<()> {
+        info!("Connecting WireGuard peer {} at {}", peer_id, endpoint);
+
+        // In a real implementation, this would:
+        // 1. Add the peer to WireGuard configuration
+        // 2. Establish the WireGuard tunnel
+        // 3. Set up routing rules
+
+        // For now, we'll just log the connection attempt
+        debug!("WireGuard peer connection simulated for {} -> {}", peer_id, endpoint);
+        Ok(())
+    }
+
+    /// Get interface statistics
+    pub fn stats(&self) -> InterfaceStats {
+        InterfaceStats {
+            interface_name: self.name.clone(),
+            state: self.state.clone(),
+            peer_count: self.peers.len(),
+            bytes_sent: 0, // Would be populated from actual interface stats
+            bytes_received: 0,
+            last_activity: self.last_activity,
+        }
+    }
+}
+
+/// Interface statistics
+#[derive(Debug, Clone)]
+pub struct InterfaceStats {
+    pub interface_name: String,
+    pub state: InterfaceState,
+    pub peer_count: usize,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub last_activity: Instant,
+}
+
 /// WireGuard peer configuration
 #[derive(Debug, Clone)]
 pub struct WireGuardPeer {
@@ -527,7 +592,7 @@ impl WireGuardManager {
 
         // Create QUIC connection for the tunnel
         let quic_connection = self.quic_network.create_connection(
-            ConnectionId::new(tunnel_id.0.as_bytes().to_vec()),
+            ConnectionId::from_bytes(&tunnel_id.0.as_bytes()),
             remote_addr,
             Some(local_addr),
         ).await?;
@@ -677,10 +742,9 @@ impl WireGuardManager {
                             expires_at: now + interval_duration,
                         };
 
+                        debug!("Rotated key pair for key_id: {}", key_id);
                         kx.key_pairs.insert(key_id, new_key_pair);
                         keys_rotated += 1;
-
-                        debug!("Rotated key pair for key_id: {}", key_id);
                     }
                 }
 

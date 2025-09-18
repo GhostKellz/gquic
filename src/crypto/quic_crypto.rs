@@ -162,8 +162,24 @@ impl QuicCrypto {
         )?;
         
         let new_keys = self.derive_packet_keys(&new_secret)?;
-        
+
         Ok((new_keys, new_secret))
+    }
+
+    /// Generate a random nonce for encryption
+    pub fn generate_nonce(&self) -> Result<Vec<u8>> {
+        // Generate a 12-byte nonce for AES-GCM
+        let mut nonce = vec![0u8; 12];
+        // Use ring's SecureRandom to fill the nonce
+        use ring::rand::{SecureRandom, SystemRandom};
+        let rng = SystemRandom::new();
+        rng.fill(&mut nonce).map_err(|_| anyhow!("Failed to generate nonce"))?;
+        Ok(nonce)
+    }
+
+    /// Get access to the underlying crypto backend
+    pub fn backend(&self) -> &Arc<dyn CryptoBackend> {
+        &self.backend
     }
 }
 

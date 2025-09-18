@@ -4,7 +4,7 @@
 //! replacement for Cloudflare's Quiche library. This enables migration from Quiche
 //! to GQUIC with zero code changes.
 
-use crate::quic::error::{QuicError, Result as GQuicResult};
+use crate::quic::error::{QuicError, Result as GQuicResult, ProtocolError};
 use crate::quic::connection::{Connection as GQuicConnection, ConnectionId as GQuicConnectionId};
 use crate::http3::{Http3Connection, Http3Request, Http3Response, Http3Header};
 use bytes::Bytes;
@@ -71,6 +71,14 @@ impl<'a> ConnectionId<'a> {
     /// Get bytes
     pub fn as_ref(&self) -> &[u8] {
         self.data
+    }
+
+    /// Generate a new random connection ID
+    pub fn new() -> ConnectionId<'static> {
+        // For quiche compatibility, we'll use a static random ID
+        // In a real implementation, this would be properly generated
+        static DEFAULT_CONN_ID: &[u8] = &[0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0];
+        ConnectionId::from_ref(DEFAULT_CONN_ID)
     }
 }
 
@@ -140,9 +148,9 @@ impl From<QuicError> for Error {
             QuicError::ConnectionClosed => Error::ConnectionClosed,
             QuicError::Timeout(_) => Error::Timeout,
             QuicError::FlowControl(_) => Error::FlowControl,
-            QuicError::Protocol(msg) if msg.contains("buffer") => Error::BufferTooShort,
-            QuicError::Protocol(msg) if msg.contains("frame") => Error::InvalidFrame,
-            QuicError::Protocol(msg) if msg.contains("packet") => Error::InvalidPacket,
+            QuicError::Protocol(ProtocolError::InvalidFrameFormat(_)) => Error::InvalidFrame,
+            QuicError::Protocol(ProtocolError::InvalidPacket(_)) => Error::InvalidPacket,
+            QuicError::Protocol(ProtocolError::InvalidPacketFormat(_)) => Error::InvalidPacket,
             _ => Error::TransportError(0),
         }
     }
@@ -326,7 +334,8 @@ impl Connection {
         // Convert to tokio socket (simplified)
         let tokio_socket = Arc::new(tokio::net::UdpSocket::from_std(socket.try_clone().unwrap()).unwrap());
 
-        let inner = GQuicConnection::new(scid.clone(), peer_addr, tokio_socket);
+        let connection_id = crate::quic::connection::ConnectionId::new();
+        let inner = GQuicConnection::new(connection_id, peer_addr, tokio_socket, false);
         let dcid = ConnectionId::new(); // Generate destination connection ID
 
         Ok(Self {
@@ -336,9 +345,9 @@ impl Connection {
             is_server: false,
             local_addr,
             peer_addr,
-            scid: scid.clone(),
-            dcid,
-            trace_id: format!("client-{}", scid),
+            scid: hex::encode(scid.as_ref()),
+            dcid: hex::encode(dcid.as_ref()),
+            trace_id: format!("client-{}", hex::encode(scid.as_ref())),
             streams: HashMap::new(),
             next_stream_id: 0, // Client-initiated streams start at 0
         })
@@ -359,7 +368,8 @@ impl Connection {
 
         let tokio_socket = Arc::new(tokio::net::UdpSocket::from_std(socket.try_clone().unwrap()).unwrap());
 
-        let inner = GQuicConnection::new(scid.clone(), peer_addr, tokio_socket);
+        let connection_id = crate::quic::connection::ConnectionId::new();
+        let inner = GQuicConnection::new(connection_id, peer_addr, tokio_socket, false);
         let dcid = odcid.cloned().unwrap_or_else(|| ConnectionId::new());
 
         Ok(Self {
@@ -369,9 +379,9 @@ impl Connection {
             is_server: true,
             local_addr,
             peer_addr,
-            scid: scid.clone(),
-            dcid,
-            trace_id: format!("server-{}", scid),
+            scid: hex::encode(scid.as_ref()),
+            dcid: hex::encode(dcid.as_ref()),
+            trace_id: format!("server-{}", hex::encode(scid.as_ref())),
             streams: HashMap::new(),
             next_stream_id: 1, // Server-initiated streams start at 1
         })
@@ -403,7 +413,7 @@ impl Connection {
 
         let send_info = SendInfo {
             to: self.peer_addr,
-            at: Instant::now(),
+            from: self.local_addr,
         };
 
         Ok((packet_size, send_info))

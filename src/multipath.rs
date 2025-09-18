@@ -264,7 +264,7 @@ struct ValidationChallenge {
 }
 
 /// Multi-path statistics
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct MultiPathStats {
     /// Total paths created
     pub paths_created: u64,
@@ -744,7 +744,7 @@ impl MultiPathConnection {
     /// Get multi-path statistics
     pub async fn stats(&self) -> MultiPathStats {
         let stats = self.stats.read().await;
-        let mut result = stats.clone();
+        let mut result = (*stats).clone();
 
         // Update active paths count
         result.active_paths = self.get_active_paths().await.len();

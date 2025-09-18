@@ -7,6 +7,7 @@ use crate::{QuicError, QuicResult, Connection, ConnectionId};
 use crate::crypto::{CryptoBackend, PublicKey, PrivateKey};
 use bytes::{Bytes, BytesMut, BufMut};
 use ring::aead::{self, Aad, LessSafeKey, Nonce, UnboundKey};
+use ring::rand::SecureRandom;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
@@ -409,7 +410,7 @@ fn derive_early_data_key(secret: &[u8]) -> QuicResult<Vec<u8>> {
     let salt = hkdf::Salt::new(hkdf::HKDF_SHA256, b"quic 0-rtt");
     let prk = salt.extract(secret);
 
-    let info = [b"early data key"];
+    let info = [b"early data key".as_slice()];
     let okm = prk.expand(&info, hkdf::HKDF_SHA256)
         .map_err(|_| QuicError::Crypto("HKDF expand failed".into()))?;
 

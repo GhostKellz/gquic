@@ -333,7 +333,7 @@ impl RfcComplianceValidator {
             // Check if server has a compatible version
             let has_compatible = server_versions.iter().any(|v| {
                 // Version 1 and Version 2 are both valid
-                matches!((client_version, v),
+                matches!((client_version, *v),
                     (QuicVersion::V1, QuicVersion::V1) |
                     (QuicVersion::V2, QuicVersion::V2) |
                     (QuicVersion::V1, QuicVersion::V2) |

@@ -41,6 +41,9 @@ pub enum ProtocolError {
     
     #[error("Frame not allowed: {0}")]
     FrameNotAllowed(String),
+
+    #[error("Invalid state: {0}")]
+    InvalidState(String),
 }
 
 #[derive(Error, Debug, Clone)]
@@ -56,6 +59,18 @@ pub enum QuicError {
     
     #[error("Protocol violation: {0}")]
     Protocol(#[from] ProtocolError),
+
+    #[error("HTTP/3 error: {0}")]
+    Http3(String),
+
+    #[error("TLS error: {0}")]
+    Tls(String),
+
+    #[error("Invalid state: {0}")]
+    InvalidState(String),
+
+    #[error("Configuration error: {0}")]
+    ConfigurationError(String),
     
     #[error("IO error: {0}")]
     Io(String), // String instead of std::io::Error for Clone
@@ -77,6 +92,12 @@ pub enum QuicError {
     
     #[error("Packet processing error: {0}")]
     Packet(#[from] PacketError),
+
+    #[error("Flow control error: {0}")]
+    FlowControl(String),
+
+    #[error("Connection closed")]
+    ConnectionClosed,
 }
 
 impl From<std::io::Error> for QuicError {
@@ -119,6 +140,12 @@ pub enum ConnectionError {
     
     #[error("Transport parameter mismatch")]
     TransportParameterMismatch,
+
+    #[error("Invalid state: {0}")]
+    InvalidState(String),
+
+    #[error("Internal error")]
+    InternalError,
 }
 
 #[derive(Error, Debug, Clone)]

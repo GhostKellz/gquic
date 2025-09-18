@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, warn};
 
 /// Stream identifier
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct StreamId(u64);
 
 impl StreamId {
@@ -127,6 +127,7 @@ pub struct UniStream {
 }
 
 /// Stream handle for connection management
+#[derive(Debug)]
 pub struct BiStreamHandle {
     /// Stream ID
     id: StreamId,
@@ -137,6 +138,7 @@ pub struct BiStreamHandle {
 }
 
 /// Unidirectional stream handle
+#[derive(Debug)]
 pub struct UniStreamHandle {
     /// Stream ID
     id: StreamId,

@@ -133,7 +133,7 @@ impl Transaction {
             gas_price,
             nonce,
             data,
-            signature: Signature(vec![]),
+            signature: Signature { data: vec![], signature_type: crate::crypto::SignatureType::Ed25519 },
             timestamp: SystemTime::now(),
             tx_type,
             defi_context: None,
@@ -202,14 +202,14 @@ impl Transaction {
     }
     
     pub fn sign(&mut self, crypto_backend: &dyn CryptoBackend, private_key: &crate::crypto::PrivateKey) -> QuicResult<()> {
-        let data = self.serialize();
-        self.signature = crypto_backend.sign(&data, private_key)?;
+        let data = Transaction::serialize(self);
+        self.signature = crypto_backend.sign(private_key, &data)?;
         Ok(())
     }
-    
+
     pub fn verify(&self, crypto_backend: &dyn CryptoBackend) -> QuicResult<bool> {
-        let data = self.serialize();
-        crypto_backend.verify(&data, &self.signature, &self.from)
+        let data = Transaction::serialize(self);
+        crypto_backend.verify(&self.from, &data, &self.signature).map_err(|e| crate::QuicError::Crypto(format!("Verify error: {:?}", e)))
     }
 }
 
@@ -380,7 +380,7 @@ impl TransactionPool {
         let encoded_frame = frame.encode_crypto();
         
         for connection in connections {
-            if let Err(e) = connection.send(&encoded_frame).await {
+            if let Err(e) = connection.send_data(&encoded_frame).await {
                 eprintln!("Failed to broadcast transaction to connection {:?}: {}", connection.id(), e);
             }
         }
@@ -414,10 +414,10 @@ impl TransactionPool {
         id.copy_from_slice(&data[offset..offset + 32]);
         offset += 32;
         
-        let from = PublicKey(data[offset..offset + 32].to_vec());
+        let from = PublicKey::new(data[offset..offset + 32].to_vec());
         offset += 32;
-        
-        let to = PublicKey(data[offset..offset + 32].to_vec());
+
+        let to = PublicKey::new(data[offset..offset + 32].to_vec());
         offset += 32;
         
         let amount = u64::from_be_bytes([
@@ -448,13 +448,13 @@ impl TransactionPool {
         Ok(Transaction {
             id,
             from,
-            to,
-            amount,
+            to: Some(to),
+            amount: amount as u128,
             gas: 21000, // Default gas
             gas_price: 20_000_000_000, // 20 gwei
             nonce: 0, // Would be parsed from data
             data: tx_data,
-            signature: Signature(vec![]), // Signature would be included in full implementation
+            signature: Signature { data: vec![], signature_type: crate::crypto::SignatureType::Ed25519 }, // Signature would be included in full implementation
             timestamp,
             tx_type: TransactionType::Transfer,
             defi_context: None,
@@ -530,7 +530,7 @@ impl Default for PoolConfig {
 }
 
 /// Advanced pool statistics
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct AdvancedPoolStats {
     pub pending_count: usize,
     pub queued_count: usize,
@@ -595,7 +595,7 @@ impl AdvancedTransactionPool {
     }
 
     pub fn stats(&self) -> AdvancedPoolStats {
-        self.pool_stats.read().unwrap().clone()
+        (*self.pool_stats.read().unwrap()).clone()
     }
 }
 
@@ -663,14 +663,14 @@ impl DeFiProtocolHandler for UniswapV3Handler {
 
         Ok(Transaction {
             id: self.generate_tx_hash(),
-            from: PublicKey(vec![0u8; 32]), // Would be filled by caller
-            to: Some(PublicKey(self.router_address.to_vec())),
+            from: PublicKey::new(vec![0u8; 32]), // Would be filled by caller
+            to: Some(PublicKey::new(self.router_address.to_vec())),
             amount: 0,
             gas,
             gas_price: 20_000_000_000, // 20 gwei
             nonce: 0, // Would be filled by caller
             data: self.encode_call_data(&action)?,
-            signature: Signature(vec![]),
+            signature: Signature { data: vec![], signature_type: crate::crypto::SignatureType::Ed25519 },
             timestamp: SystemTime::now(),
             tx_type: TransactionType::DeFiSwap,
             defi_context: Some(context),

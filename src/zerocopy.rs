@@ -8,6 +8,7 @@ use bytes::{Bytes, BytesMut, Buf, BufMut};
 use std::alloc::{Layout, alloc, dealloc};
 use std::ptr::NonNull;
 use std::sync::Arc;
+use tracing::debug;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::VecDeque;
 use std::time::Instant;
@@ -60,10 +61,14 @@ pub enum QoSMarking {
 pub enum PacketTypeHint {
     /// Unknown packet type
     Unknown,
+    /// Initial packet
+    Initial,
     /// Data packet (STREAM frames)
     Data,
     /// Control packet (ACK, PING, etc.)
     Control,
+    /// ACK packet
+    Ack,
     /// Handshake packet
     Handshake,
     /// Close packet
@@ -110,7 +115,7 @@ impl PacketBuffer {
     }
 
     /// Split packet into header and payload (zero-copy)
-    pub fn split_at(&self, mid: usize) -> Result<(Bytes, Bytes)> {
+    pub fn split_at(&self, mid: usize) -> QuicResult<(Bytes, Bytes)> {
         if mid > self.data.len() {
             return Err(QuicError::Protocol("Split index out of bounds".to_string()));
         }
@@ -187,9 +192,21 @@ struct PoolStats {
     deallocation_count: AtomicUsize,
 }
 
+impl PoolStats {
+    pub fn fragmentation_ratio(&self) -> f64 {
+        let total = self.total_allocated.load(Ordering::Relaxed);
+        if total == 0 {
+            0.0
+        } else {
+            let used = self.current_used.load(Ordering::Relaxed);
+            (total - used) as f64 / total as f64
+        }
+    }
+}
+
 impl MemoryPool {
     /// Create a new memory pool
-    pub fn new(config: PoolConfig) -> Result<Arc<Self>> {
+    pub fn new(config: PoolConfig) -> QuicResult<Arc<Self>> {
         let mut chunks = Vec::new();
 
         // Pre-allocate initial chunks
@@ -219,7 +236,7 @@ impl MemoryPool {
     }
 
     /// Allocate a buffer from the pool
-    pub fn allocate(&self, size: usize) -> Result<BytesMut> {
+    pub fn allocate(&self, size: usize) -> QuicResult<BytesMut> {
         if size > self.config.chunk_size {
             return Err(QuicError::Protocol(format!(
                 "Requested size {} exceeds chunk size {}",
@@ -292,7 +309,7 @@ impl Drop for MemoryPool {
 
 impl MemoryChunk {
     /// Allocate an aligned memory chunk
-    fn allocate(size: usize, alignment: usize) -> Result<Self> {
+    fn allocate(size: usize, alignment: usize) -> QuicResult<Self> {
         let layout = Layout::from_size_align(size, alignment)
             .map_err(|e| QuicError::Protocol(format!("Invalid layout: {}", e)))?;
 
@@ -326,8 +343,29 @@ pub struct MemoryPoolStats {
     pub chunk_count: usize,
 }
 
+impl MemoryPoolStats {
+    pub fn fragmentation_ratio(&self) -> f64 {
+        if self.total_allocated == 0 {
+            0.0
+        } else {
+            (self.total_allocated - self.current_used) as f64 / self.total_allocated as f64
+        }
+    }
+}
+
+impl From<MemoryPoolStats> for PoolStats {
+    fn from(stats: MemoryPoolStats) -> Self {
+        Self {
+            total_allocated: AtomicUsize::new(stats.total_allocated),
+            current_used: AtomicUsize::new(stats.current_used),
+            allocation_count: AtomicUsize::new(stats.allocation_count),
+            deallocation_count: AtomicUsize::new(stats.deallocation_count),
+        }
+    }
+}
+
 /// Memory pool optimization report
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct OptimizationReport {
     pub optimizations: Vec<String>,
     pub old_stats: PoolStats,
@@ -344,7 +382,7 @@ pub struct AdvancedMemoryPool {
 }
 
 impl AdvancedMemoryPool {
-    pub fn new(config: PoolConfig) -> Result<Self> {
+    pub fn new(config: PoolConfig) -> QuicResult<Self> {
         let pool = MemoryPool::new(config)?;
 
         Ok(Self {
@@ -356,12 +394,12 @@ impl AdvancedMemoryPool {
     }
 
     /// Smart allocation with size prediction
-    pub fn smart_allocate(&mut self, size: usize) -> Result<BytesMut> {
+    pub fn smart_allocate(&mut self, size: usize) -> QuicResult<BytesMut> {
         // Update size predictions
         self.size_predictor.record_allocation(size);
 
         // Check if we should preemptively optimize
-        if self.fragmentation_monitor.should_optimize(&self.pool.stats()) {
+        if self.fragmentation_monitor.should_optimize(&self.pool.stats().into()) {
             self.optimize_pool()?;
         }
 
@@ -373,12 +411,12 @@ impl AdvancedMemoryPool {
         }
     }
 
-    fn allocate_best_fit(&self, size: usize) -> Result<BytesMut> {
+    fn allocate_best_fit(&self, size: usize) -> QuicResult<BytesMut> {
         // Find the smallest chunk that fits the request
         self.pool.allocate(size) // Simplified - actual implementation would search for best fit
     }
 
-    fn allocate_adaptive(&mut self, size: usize) -> Result<BytesMut> {
+    fn allocate_adaptive(&mut self, size: usize) -> QuicResult<BytesMut> {
         // Use predicted size patterns to choose allocation strategy
         let predicted_size = self.size_predictor.predict_next_size();
 
@@ -393,7 +431,7 @@ impl AdvancedMemoryPool {
     }
 
     /// Optimize memory pool with advanced techniques
-    pub fn optimize_pool(&self) -> Result<OptimizationReport> {
+    pub fn optimize_pool(&self) -> QuicResult<OptimizationReport> {
         let old_stats = self.pool.stats();
         let mut optimizations = Vec::new();
 
@@ -404,7 +442,7 @@ impl AdvancedMemoryPool {
         }
 
         // Pool resizing based on usage patterns
-        let usage_ratio = old_stats.current_used as f64 / self.pool.capacity() as f64;
+        let usage_ratio = old_stats.current_used as f64 / old_stats.total_allocated as f64;
         if usage_ratio > 0.85 {
             self.expand_pool();
             optimizations.push("Pool expanded due to high usage".to_string());
@@ -416,8 +454,8 @@ impl AdvancedMemoryPool {
         let new_stats = self.pool.stats();
         Ok(OptimizationReport {
             optimizations,
-            old_stats,
-            new_stats,
+            old_stats: old_stats.into(),
+            new_stats: new_stats.into(),
         })
     }
 
@@ -434,11 +472,12 @@ impl AdvancedMemoryPool {
     }
 
     pub fn stats(&self) -> PoolStats {
-        self.pool.stats()
+        self.pool.stats().into()
     }
 
     pub fn fragmentation_info(&self) -> FragmentationInfo {
-        self.fragmentation_monitor.current_info(&self.pool.stats())
+        let pool_stats: PoolStats = self.pool.stats().into();
+        self.fragmentation_monitor.current_info(&pool_stats)
     }
 }
 
@@ -535,7 +574,7 @@ pub struct ZeroCopyIO {
 
 impl ZeroCopyIO {
     /// Create new zero-copy I/O handler
-    pub fn new(pool_config: PoolConfig) -> Result<Self> {
+    pub fn new(pool_config: PoolConfig) -> QuicResult<Self> {
         let memory_pool = MemoryPool::new(pool_config)?;
         Ok(Self { memory_pool })
     }
@@ -546,33 +585,33 @@ impl ZeroCopyIO {
         socket: &tokio::net::UdpSocket,
         data: &[u8],
         addr: std::net::SocketAddr,
-    ) -> Result<usize> {
+    ) -> QuicResult<usize> {
         // In a real implementation, this would use sendmsg with MSG_ZEROCOPY
         // For now, use regular send
         socket.send_to(data, addr)
             .await
-            .map_err(|e| QuicError::Io(e.to_string()))
+            .map_err(QuicError::Io)
     }
 
     /// Receive data with zero-copy optimization
     pub async fn recv_zerocopy(
         &self,
         socket: &tokio::net::UdpSocket,
-    ) -> Result<PacketBuffer> {
+    ) -> QuicResult<PacketBuffer> {
         // Allocate buffer from pool
         let mut buf = self.memory_pool.allocate(65536)?; // Max UDP packet size
 
         // Receive data
         let (len, addr) = socket.recv_from(&mut buf)
             .await
-            .map_err(|e| QuicError::Io(e.to_string()))?;
+            .map_err(QuicError::Io)?;
 
         buf.truncate(len);
 
         let metadata = PacketMetadata {
             src_addr: addr,
             dst_addr: socket.local_addr()
-                .map_err(|e| QuicError::Io(e.to_string()))?,
+                .map_err(QuicError::Io)?,
             timestamp: std::time::Instant::now(),
             size: len,
             qos: QoSMarking::BestEffort,
@@ -588,7 +627,7 @@ impl ZeroCopyIO {
         &self,
         socket: &tokio::net::UdpSocket,
         max_packets: usize,
-    ) -> Result<Vec<PacketBuffer>> {
+    ) -> QuicResult<Vec<PacketBuffer>> {
         let mut packets = Vec::with_capacity(max_packets);
 
         // In a real implementation, this would use recvmmsg for batch receive
@@ -615,7 +654,7 @@ pub mod simd {
 
     /// SIMD-optimized memory copy
     #[cfg(target_arch = "x86_64")]
-    pub fn memcpy_simd(dst: &mut [u8], src: &[u8]) -> Result<()> {
+    pub fn memcpy_simd(dst: &mut [u8], src: &[u8]) -> QuicResult<()> {
         if dst.len() != src.len() {
             return Err(QuicError::Protocol("Buffer size mismatch".to_string()));
         }
@@ -655,7 +694,7 @@ pub mod simd {
 
     /// SIMD-optimized XOR operation for encryption
     #[cfg(target_arch = "x86_64")]
-    pub fn xor_simd(dst: &mut [u8], src1: &[u8], src2: &[u8]) -> Result<()> {
+    pub fn xor_simd(dst: &mut [u8], src1: &[u8], src2: &[u8]) -> QuicResult<()> {
         if dst.len() != src1.len() || dst.len() != src2.len() {
             return Err(QuicError::Protocol("Buffer size mismatch".to_string()));
         }
@@ -849,6 +888,9 @@ impl AdvancedPacketProcessor {
             PacketTypeHint::Handshake => self.process_handshake_packet(packet).await,
             PacketTypeHint::Data => self.process_data_packet(packet).await,
             PacketTypeHint::Ack => self.process_ack_packet(packet).await,
+            PacketTypeHint::Control => self.process_control_packet(packet).await,
+            PacketTypeHint::Close => self.process_close_packet(packet).await,
+            PacketTypeHint::Unknown => self.process_unknown_packet(packet).await,
         }
     }
 
@@ -898,6 +940,36 @@ impl AdvancedPacketProcessor {
         })
     }
 
+    async fn process_control_packet(&mut self, packet: PacketBuffer) -> Result<ProcessedPacket, Box<dyn std::error::Error + Send + Sync>> {
+        // Control packet processing
+        Ok(ProcessedPacket {
+            data: packet.data,
+            metadata: packet.metadata,
+            processing_time: std::time::Duration::from_nanos(30),
+            validation_result: ValidationResult::Valid,
+        })
+    }
+
+    async fn process_close_packet(&mut self, packet: PacketBuffer) -> Result<ProcessedPacket, Box<dyn std::error::Error + Send + Sync>> {
+        // Close packet processing
+        Ok(ProcessedPacket {
+            data: packet.data,
+            metadata: packet.metadata,
+            processing_time: std::time::Duration::from_nanos(20),
+            validation_result: ValidationResult::Valid,
+        })
+    }
+
+    async fn process_unknown_packet(&mut self, packet: PacketBuffer) -> Result<ProcessedPacket, Box<dyn std::error::Error + Send + Sync>> {
+        // Unknown packet processing
+        Ok(ProcessedPacket {
+            data: packet.data,
+            metadata: packet.metadata,
+            processing_time: std::time::Duration::from_nanos(50),
+            validation_result: ValidationResult::Valid,
+        })
+    }
+
     async fn apply_simd_processing(&self, data: &Bytes) -> Result<Bytes, Box<dyn std::error::Error + Send + Sync>> {
         #[cfg(target_arch = "x86_64")]
         {
@@ -937,8 +1009,12 @@ pub struct PacketRingBuffer {
 
 impl PacketRingBuffer {
     pub fn new(capacity: usize) -> Self {
+        let mut buffer = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            buffer.push(None);
+        }
         Self {
-            buffer: vec![None; capacity],
+            buffer,
             head: 0,
             tail: 0,
             capacity,

@@ -50,9 +50,9 @@ impl Default for BatchConfig {
 pub struct BatchProcessor {
     config: BatchConfig,
     memory_pool: Arc<AdvancedMemoryPool>,
-    input_queue: parking_lot::Mutex<VecDeque<BatchItem>>,
-    output_queue: parking_lot::Mutex<VecDeque<ProcessedBatch>>,
-    stats: BatchStats,
+    input_queue: Arc<parking_lot::Mutex<VecDeque<BatchItem>>>,
+    output_queue: Arc<parking_lot::Mutex<VecDeque<ProcessedBatch>>>,
+    stats: Arc<BatchStats>,
     batch_ready: Arc<Notify>,
     workers: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -66,9 +66,9 @@ impl BatchProcessor {
         let processor = Self {
             config,
             memory_pool,
-            input_queue: parking_lot::Mutex::new(VecDeque::new()),
-            output_queue: parking_lot::Mutex::new(VecDeque::new()),
-            stats: BatchStats::default(),
+            input_queue: Arc::new(parking_lot::Mutex::new(VecDeque::new())),
+            output_queue: Arc::new(parking_lot::Mutex::new(VecDeque::new())),
+            stats: Arc::new(BatchStats::default()),
             batch_ready: Arc::new(Notify::new()),
             workers: Vec::new(),
         };
@@ -81,10 +81,10 @@ impl BatchProcessor {
         for worker_id in 0..self.config.worker_threads {
             let config = self.config.clone();
             let memory_pool = Arc::clone(&self.memory_pool);
-            let input_queue = self.input_queue.clone();
-            let output_queue = self.output_queue.clone();
+            let input_queue = Arc::clone(&self.input_queue);
+            let output_queue = Arc::clone(&self.output_queue);
             let batch_ready = Arc::clone(&self.batch_ready);
-            let stats = self.stats.clone();
+            let stats = Arc::clone(&self.stats);
 
             let worker = tokio::spawn(async move {
                 Self::worker_loop(worker_id, config, memory_pool, input_queue, output_queue, batch_ready, stats).await;
@@ -302,10 +302,10 @@ impl BatchProcessor {
         worker_id: usize,
         config: BatchConfig,
         memory_pool: Arc<AdvancedMemoryPool>,
-        input_queue: parking_lot::Mutex<VecDeque<BatchItem>>,
-        output_queue: parking_lot::Mutex<VecDeque<ProcessedBatch>>,
+        input_queue: Arc<parking_lot::Mutex<VecDeque<BatchItem>>>,
+        output_queue: Arc<parking_lot::Mutex<VecDeque<ProcessedBatch>>>,
         batch_ready: Arc<Notify>,
-        stats: BatchStats,
+        stats: Arc<BatchStats>,
     ) {
         debug!("Batch worker {} started", worker_id);
 
@@ -438,11 +438,11 @@ impl BatchProcessor {
         memory_pool: &Arc<AdvancedMemoryPool>,
     ) -> QuicResult<ProcessedPacket> {
         // Parse packet
-        let packet = Packet::parse(&item.packet.data)
+        let packet = Packet::parse(item.packet.data())
             .map_err(|e| QuicError::Protocol(format!("Failed to parse packet: {}", e)))?;
 
         // Validate packet
-        if packet.data.len() < 4 {
+        if packet.data().len() < 4 {
             return Err(QuicError::Protocol("Packet too short".to_string()));
         }
 
@@ -543,7 +543,7 @@ pub enum ProcessingResult {
 }
 
 /// Batch processing statistics
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct BatchStats {
     packets_submitted: AtomicU64,
     packets_received: AtomicU64,

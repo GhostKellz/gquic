@@ -241,8 +241,8 @@ impl EventManager {
         let now = Instant::now();
 
         // Update connection state
-        if let Some(connection_id) = event.connection_id {
-            self.update_connection_state(connection_id, &event, now).await;
+        if let Some(ref connection_id) = event.connection_id {
+            self.update_connection_state(connection_id.clone(), &event, now).await;
         }
 
         // Add to history
@@ -735,7 +735,7 @@ impl EventAutomation {
                 let cutoff = SystemTime::now() - *within;
                 let history = self.event_manager.get_event_history(
                     Some(EventFilter {
-                        connection_ids: event.connection_id.map(|id| vec![id]),
+                        connection_ids: event.connection_id.as_ref().map(|id| vec![id.clone()]),
                         event_types: Some(vec![event_type.clone()]),
                         min_priority: None,
                         tags: None,

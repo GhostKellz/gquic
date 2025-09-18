@@ -43,7 +43,6 @@ pub struct DerpServer {
 }
 
 /// DERP client for connecting to relay servers
-#[derive(Debug)]
 pub struct DerpClient {
     /// Client configuration
     config: DerpClientConfig,
@@ -219,7 +218,7 @@ pub struct DerpMessage {
     /// Destination node
     pub destination: DerpNodeId,
     /// Message payload
-    pub payload: Bytes,
+    pub payload: Vec<u8>,
     /// Message timestamp
     pub timestamp: SystemTime,
     /// Message TTL
@@ -287,7 +286,7 @@ pub enum NatTraversalMethod {
 }
 
 /// Connected client information
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DerpConnectedClient {
     /// Node information
     pub node_info: DerpNodeInfo,
@@ -300,7 +299,7 @@ pub struct DerpConnectedClient {
 }
 
 /// Simple rate limiter
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RateLimiter {
     /// Messages in current window
     pub messages_in_window: u32,
@@ -313,7 +312,7 @@ pub struct RateLimiter {
 }
 
 /// DERP relay connection
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DerpRelay {
     /// Relay server address
     pub server_addr: SocketAddr,
@@ -648,7 +647,7 @@ impl DerpServer {
     /// Process a single message
     async fn process_message(
         message: &DerpMessage,
-        clients: &Arc<RwLock<HashMap<DerpNodeId, DerpClient>>>,
+        clients: &Arc<RwLock<HashMap<DerpNodeId, DerpConnectedClient>>>,
         relay_sessions: &Arc<RwLock<HashMap<RelaySessionId, RelaySession>>>,
         stats: &Arc<RwLock<DerpStats>>,
     ) -> Result<()> {
@@ -919,8 +918,46 @@ impl DerpClient {
             .min_by_key(|relay| relay.rtt)
             .unwrap();
 
-        Ok(best_relay.clone())
+        Ok((*best_relay).clone())
     }
+
+    /// Connect to a specific peer through DERP relay
+    pub async fn connect_to_peer(&self, peer_id: DerpNodeId, relay_addr: SocketAddr) -> Result<DerpConnection> {
+        info!("Connecting to peer {} via DERP relay {}", peer_id, relay_addr);
+
+        // Create a DERP connection for this specific peer
+        let connection = DerpConnection {
+            peer_id: peer_id.clone(),
+            relay_addr,
+            connection_id: format!("derp_conn_{}", rand::random::<u64>()),
+            established_at: Instant::now(),
+            last_activity: Instant::now(),
+            bytes_sent: 0,
+            bytes_received: 0,
+            rtt: Duration::from_millis(50), // Default RTT
+        };
+
+        // In a real implementation, this would:
+        // 1. Establish connection through the relay
+        // 2. Perform handshake with the peer
+        // 3. Set up forwarding rules
+
+        debug!("DERP peer connection established: {} -> {}", peer_id, relay_addr);
+        Ok(connection)
+    }
+}
+
+/// DERP connection representation
+#[derive(Debug, Clone)]
+pub struct DerpConnection {
+    pub peer_id: DerpNodeId,
+    pub relay_addr: SocketAddr,
+    pub connection_id: String,
+    pub established_at: Instant,
+    pub last_activity: Instant,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub rtt: Duration,
 }
 
 impl RateLimiter {

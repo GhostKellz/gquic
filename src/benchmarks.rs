@@ -71,7 +71,7 @@ pub enum TestScenario {
 }
 
 /// Libraries to compare against
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, Hash, PartialEq)]
 pub enum LibraryUnderTest {
     GQUIC,
     Quinn,
@@ -686,7 +686,7 @@ impl BenchmarkRunner {
             cpu_cores: num_cpus::get(),
             memory_gb: 16.0, // Would use system detection
             network_interface: "eth0".to_string(),
-            rust_version: env!("CARGO_PKG_RUST_VERSION").unwrap_or("unknown").to_string(),
+            rust_version: option_env!("CARGO_PKG_RUST_VERSION").unwrap_or("unknown").to_string(),
             hardware_features: vec![
                 "AES-NI".to_string(),
                 "AVX2".to_string(),

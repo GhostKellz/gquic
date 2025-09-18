@@ -15,7 +15,7 @@ use tokio::time::{Duration, Instant, timeout};
 use ring::rand::{self, SecureRandom};
 
 /// Path for connection migration
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Path {
     /// Local address
     pub local: SocketAddr,
@@ -47,7 +47,7 @@ pub enum PathState {
 }
 
 /// Path validation data
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PathValidation {
     /// Challenge data sent
     pub challenge: Vec<u8>,
@@ -60,7 +60,7 @@ pub struct PathValidation {
 }
 
 /// Path statistics
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct PathStats {
     /// Packets sent on this path
     pub packets_sent: u64,
@@ -290,19 +290,22 @@ impl MigrationHandler {
             return Err(QuicError::Protocol("Migration not enabled".into()));
         }
 
-        let paths = self.paths.read().await;
-        let new_path = paths.get(&new_path_id)
-            .ok_or_else(|| QuicError::Protocol("Path not found".into()))?;
+        let (new_path_local, new_path_remote) = {
+            let paths = self.paths.read().await;
+            let new_path = paths.get(&new_path_id)
+                .ok_or_else(|| QuicError::Protocol("Path not found".into()))?;
 
-        if new_path.state != PathState::Active {
-            return Err(QuicError::Protocol("Path not active".into()));
-        }
+            if new_path.state != PathState::Active {
+                return Err(QuicError::Protocol("Path not active".into()));
+            }
+
+            (new_path.local, new_path.remote)
+        };
 
         let old_path_id = *self.primary_path.read().await;
-        drop(paths);
 
         // Update connection to use new path
-        conn.set_path(new_path.local, new_path.remote)?;
+        conn.set_path(new_path_local, new_path_remote)?;
 
         // Update primary path
         *self.primary_path.write().await = new_path_id;

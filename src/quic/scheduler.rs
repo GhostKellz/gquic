@@ -64,6 +64,18 @@ pub enum Priority {
     Background = 4, // Non-time-sensitive data
 }
 
+impl Priority {
+    pub fn as_u8(&self) -> u8 {
+        match self {
+            Priority::Critical => 0,
+            Priority::High => 1,
+            Priority::Normal => 2,
+            Priority::Low => 3,
+            Priority::Background => 4,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StreamMetadata {
     pub stream_id: StreamId,
@@ -214,16 +226,16 @@ impl StreamScheduler {
 
     /// Add frames to be scheduled for a stream
     pub fn enqueue_frames(&mut self, stream_id: StreamId, frames: Vec<Frame>) -> Result<()> {
+        // Calculate total bytes first to avoid borrow conflicts
+        let total_bytes: usize = frames.iter()
+            .map(|f| self.frame_size_estimate(f))
+            .sum();
+
         let metadata = self.stream_registry.get_mut(&stream_id)
             .ok_or_else(|| QuicError::Config(format!("Stream {} not registered", stream_id)))?;
 
         let priority = metadata.priority.clone();
         let weight = metadata.weight;
-
-        // Calculate total bytes and store frame count
-        let total_bytes: usize = frames.iter()
-            .map(|f| self.frame_size_estimate(f))
-            .sum();
         let frame_count = frames.len();
 
         metadata.bytes_pending += total_bytes as u64;
@@ -285,7 +297,7 @@ impl StreamScheduler {
         let priority_keys: Vec<Priority> = self.priority_queues.keys().cloned().collect();
         for priority in priority_keys {
             if let Some(queue) = self.priority_queues.get_mut(&priority) {
-                if let Some((stream_id, frame)) = self.schedule_from_priority_queue(queue, now) {
+                if let Some((stream_id, frame)) = Self::schedule_from_priority_queue_static(queue, now) {
                     self.update_scheduling_stats(stream_id, &frame, now);
                     return Some((stream_id, frame));
                 }
@@ -392,7 +404,7 @@ impl StreamScheduler {
         let priority_keys: Vec<Priority> = self.priority_queues.keys().cloned().collect();
         for priority in priority_keys {
             if let Some(queue) = self.priority_queues.get_mut(&priority) {
-                if let Some((stream_id, frame)) = self.schedule_round_robin_priority(queue, now) {
+                if let Some((stream_id, frame)) = Self::schedule_round_robin_priority_static(queue, now) {
                     return Some((stream_id, frame));
                 }
             }
@@ -431,7 +443,7 @@ impl StreamScheduler {
                     if let Some(stream_idx) = queue.iter().position(|s| s.stream_id == stream_id) {
                         if !queue[stream_idx].frames_pending.is_empty() {
                             self.stats.deadline_misses += 1;
-                            return self.extract_frame_from_stream_direct(queue, stream_idx, now);
+                            return Self::extract_frame_from_stream_direct_static(queue, stream_idx, now);
                         }
                     }
                 }
@@ -463,9 +475,11 @@ impl StreamScheduler {
                             info!("Scheduling starved stream {}", stream_id);
                             // Extract frame data before calling extract method
                             if let Some(frame) = queue[stream_idx].frames_pending.pop_front() {
-                                queue[stream_idx].last_scheduled = now;
-                                self.update_bandwidth_allocation(stream_id, frame.size() as u64);
-                                return Some(frame);
+                                queue[stream_idx].last_sent = now;
+                                // Estimate frame size for bandwidth allocation
+                                let frame_size = 1024; // Placeholder frame size estimate
+                                self.update_bandwidth_allocation(frame_size as u64);
+                                return Some((stream_id, frame));
                             }
                         }
                     }
@@ -710,8 +724,7 @@ impl StreamScheduler {
                 // Calculate effective priority score
                 let base_priority = stream.priority.as_u8() as u64;
                 let weight_factor = stream.weight as u64;
-                let time_factor = now.duration_since(stream.last_scheduled)
-                    .unwrap_or_default()
+                let time_factor = now.saturating_duration_since(stream.last_sent)
                     .as_millis() as u64;
                 
                 // Lower score = higher priority
@@ -750,7 +763,7 @@ impl StreamScheduler {
         let stream = &mut queue[stream_idx];
         if let Some(frame) = stream.frames_pending.pop_front() {
             let stream_id = stream.stream_id;
-            stream.last_scheduled = now;
+            stream.last_sent = now;
             Some((stream_id, frame))
         } else {
             None

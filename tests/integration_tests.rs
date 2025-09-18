@@ -80,11 +80,11 @@ mod crypto_tests {
 
     #[test]
     fn test_key_types() {
-        let public_key = PublicKey(vec![1, 2, 3, 4]);
-        let private_key = PrivateKey(vec![5, 6, 7, 8]);
+        let public_key = PublicKey::new(vec![1, 2, 3, 4]);
+        let private_key = PrivateKey::new(vec![5, 6, 7, 8]);
 
-        assert_eq!(public_key.as_bytes(), &[1, 2, 3, 4]);
-        assert_eq!(private_key.as_bytes(), &[5, 6, 7, 8]);
+        assert_eq!(public_key.data, &[1, 2, 3, 4]);
+        assert_eq!(private_key.data, &[5, 6, 7, 8]);
     }
 }
 

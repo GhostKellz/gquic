@@ -297,7 +297,7 @@ pub struct ServiceWatcher {
 }
 
 /// Service query for discovery
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceQuery {
     /// Service name pattern
     pub name_pattern: String,
@@ -309,6 +309,22 @@ pub struct ServiceQuery {
     pub metadata_filters: HashMap<String, String>,
     /// Health requirement
     pub require_healthy: bool,
+}
+
+impl std::hash::Hash for ServiceQuery {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name_pattern.hash(state);
+        self.namespace.hash(state);
+        // Convert HashSet to sorted Vec for consistent hashing
+        let mut tags: Vec<_> = self.required_tags.iter().collect();
+        tags.sort();
+        tags.hash(state);
+        // Convert HashMap to sorted Vec for consistent hashing
+        let mut metadata: Vec<_> = self.metadata_filters.iter().collect();
+        metadata.sort();
+        metadata.hash(state);
+        self.require_healthy.hash(state);
+    }
 }
 
 /// Service resolution result
@@ -984,14 +1000,22 @@ impl ServiceDiscoveryManager {
                 // Clean expired cache entries
                 {
                     let mut cache = remote_services.write().await;
-                    cache.cache_expiry.retain(|query, expiry| {
-                        if now > *expiry {
-                            cache.resolution_cache.remove(query);
-                            false
-                        } else {
-                            true
-                        }
-                    });
+                    // Collect expired queries first
+                    let expired_queries: Vec<_> = cache.cache_expiry.iter()
+                        .filter_map(|(query, expiry)| {
+                            if now > *expiry {
+                                Some(query.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+
+                    // Remove expired entries
+                    for query in &expired_queries {
+                        cache.cache_expiry.remove(query);
+                        cache.resolution_cache.remove(query);
+                    }
                 }
 
                 // Clean inactive peers

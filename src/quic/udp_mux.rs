@@ -130,7 +130,7 @@ impl UdpMultiplexer {
                 }
                 Err(e) => {
                     error!("Error receiving UDP packet: {}", e);
-                    return Err(QuicError::Io(e.to_string()));
+                    return Err(anyhow::anyhow!("UDP receive error: {}", e));
                 }
             }
         }
@@ -191,7 +191,7 @@ impl UdpMultiplexer {
             }
             Err(e) => {
                 error!("Failed to send packet to {}: {}", destination, e);
-                Err(QuicError::Io(e.to_string()))
+                Err(anyhow::anyhow!("UDP send error: {}", e))
             }
         }
     }

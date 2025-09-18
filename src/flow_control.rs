@@ -249,7 +249,7 @@ impl ConnectionFlowController {
                 return Err(e);
             }
         } else {
-            return Err(QuicError::Protocol(format!("Stream {} not found", stream_id.value())));
+            return Err(QuicError::Protocol(crate::quic::error::ProtocolError::InvalidState(format!("Stream {} not found", stream_id.value()))));
         }
 
         Ok(())
@@ -274,7 +274,7 @@ impl ConnectionFlowController {
         let stream_update = if let Some(stream_window) = self.stream_windows.get(&stream_id) {
             stream_window.record_received(amount)?
         } else {
-            return Err(QuicError::Protocol(format!("Stream {} not found", stream_id.value())));
+            return Err(QuicError::Protocol(crate::quic::error::ProtocolError::InvalidState(format!("Stream {} not found", stream_id.value()))));
         };
 
         Ok((connection_update, stream_update))
@@ -288,7 +288,7 @@ impl ConnectionFlowController {
         if let Some(stream_window) = self.stream_windows.get(&stream_id) {
             stream_window.consume_data(amount);
         } else {
-            return Err(QuicError::Protocol(format!("Stream {} not found", stream_id.value())));
+            return Err(QuicError::Protocol(crate::quic::error::ProtocolError::InvalidState(format!("Stream {} not found", stream_id.value()))));
         }
 
         Ok(())
@@ -305,7 +305,7 @@ impl ConnectionFlowController {
             stream_window.update_send_limit(new_limit);
             Ok(())
         } else {
-            Err(QuicError::Protocol(format!("Stream {} not found", stream_id.value())))
+            Err(QuicError::Protocol(crate::quic::error::ProtocolError::InvalidState(format!("Stream {} not found", stream_id.value()))))
         }
     }
 
@@ -319,7 +319,7 @@ impl ConnectionFlowController {
         if let Some(stream_window) = self.stream_windows.get(&stream_id) {
             Ok(stream_window.new_receive_limit(&self.config))
         } else {
-            Err(QuicError::Protocol(format!("Stream {} not found", stream_id.value())))
+            Err(QuicError::Protocol(crate::quic::error::ProtocolError::InvalidState(format!("Stream {} not found", stream_id.value()))))
         }
     }
 

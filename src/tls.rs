@@ -89,14 +89,15 @@ impl QuicTls {
     /// Create a new client TLS connection
     #[cfg(feature = "rustls-tls")]
     pub fn new_client(server_name: &str) -> Result<Self> {
-        use rustls::pki_types::ServerName;
+        use rustls::pki_types::{ServerName, DnsName};
 
         let config = rustls::ClientConfig::builder()
             .with_root_certificates(rustls::RootCertStore::empty())
             .with_no_client_auth();
 
-        let server_name = ServerName::try_from(server_name)
-            .map_err(|e| QuicError::Tls(format!("Invalid server name: {}", e)))?;
+        let dns_name = DnsName::try_from(server_name.to_owned())
+            .map_err(|e| QuicError::Tls(format!("Invalid DNS name: {}", e)))?;
+        let server_name = ServerName::DnsName(dns_name);
 
         let conn = ClientConnection::new(Arc::new(config), server_name)
             .map_err(|e| QuicError::Tls(format!("Failed to create client connection: {}", e)))?;
@@ -163,7 +164,7 @@ impl QuicTls {
         #[cfg(feature = "rustls-tls")]
         {
             match &mut self.connection {
-                TlsConnection::Client(conn) | TlsConnection::Server(conn) => {
+                TlsConnection::Client(_) | TlsConnection::Server(_) => {
                     // Simplified handshake processing for now
                     // In a real implementation, would use rustls QUIC API properly
 
@@ -255,7 +256,7 @@ impl QuicTls {
             }
             Ok(())
         } else {
-            Err(QuicError::Crypto("No keys available for encryption level".to_string()))
+            Err(QuicError::Crypto(crate::quic::error::CryptoError::Generic("No keys available for encryption level".to_string())))
         }
     }
 
@@ -282,7 +283,7 @@ impl QuicTls {
 
             Ok(ciphertext)
         } else {
-            Err(QuicError::Crypto("No keys available for encryption level".to_string()))
+            Err(QuicError::Crypto(crate::quic::error::CryptoError::Generic("No keys available for encryption level".to_string())))
         }
     }
 
@@ -290,7 +291,7 @@ impl QuicTls {
     pub fn decrypt_payload(&self, level: EncryptionLevel, ciphertext: &[u8], packet_number: u64) -> Result<Vec<u8>> {
         if let Some(_keys) = self.keys.get(&level) {
             if ciphertext.len() < 16 {
-                return Err(QuicError::Crypto("Ciphertext too short".to_string()));
+                return Err(QuicError::Crypto(crate::quic::error::CryptoError::Generic("Ciphertext too short".to_string())));
             }
 
             // Remove authentication tag
@@ -304,7 +305,7 @@ impl QuicTls {
 
             Ok(plaintext)
         } else {
-            Err(QuicError::Crypto("No keys available for encryption level".to_string()))
+            Err(QuicError::Crypto(crate::quic::error::CryptoError::Generic("No keys available for encryption level".to_string())))
         }
     }
 }

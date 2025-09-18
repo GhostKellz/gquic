@@ -35,7 +35,6 @@ pub enum StateEvent {
 }
 
 /// Comprehensive state machine for QUIC connections
-#[derive(Debug)]
 pub struct QuicStateMachine {
     current_state: ConnectionState,
     previous_state: Option<ConnectionState>,

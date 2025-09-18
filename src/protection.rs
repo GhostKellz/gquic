@@ -7,6 +7,7 @@ use crate::quic::error::{QuicError, Result};
 use crate::tls::{EncryptionLevel, QuicTls};
 use bytes::{Bytes, BytesMut, Buf, BufMut};
 use std::collections::HashMap;
+use tracing::debug;
 
 /// Packet number for tracking and replay protection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -45,7 +46,7 @@ impl PacketNumber {
     /// Decode packet number from bytes
     pub fn decode(bytes: &[u8], largest_pn: Option<PacketNumber>) -> Result<PacketNumber> {
         if bytes.is_empty() || bytes.len() > 4 {
-            return Err(QuicError::Protocol("Invalid packet number length".to_string()));
+            return Err(QuicError::Protocol(crate::quic::error::ProtocolError::InvalidPacketFormat("Invalid packet number length".to_string())));
         }
 
         let mut pn = 0u64;
@@ -108,15 +109,15 @@ impl AeadContext {
             use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 
             let unbound_key = UnboundKey::new(&AES_256_GCM, &self.key)
-                .map_err(|_| QuicError::Crypto("Failed to create key".to_string()))?;
+                .map_err(|_| QuicError::Crypto(crate::quic::error::CryptoError::Generic("Failed to create key".to_string())))?;
             let key = LessSafeKey::new(unbound_key);
 
             let nonce = Nonce::try_assume_unique_for_key(&nonce)
-                .map_err(|_| QuicError::Crypto("Invalid nonce".to_string()))?;
+                .map_err(|_| QuicError::Crypto(crate::quic::error::CryptoError::Generic("Invalid nonce".to_string())))?;
 
             let mut in_out = plaintext.to_vec();
             key.seal_in_place_append_tag(nonce, Aad::from(aad), &mut in_out)
-                .map_err(|_| QuicError::Crypto("Encryption failed".to_string()))?;
+                .map_err(|_| QuicError::Crypto(crate::quic::error::CryptoError::Encryption("Encryption failed".to_string())))?;
 
             Ok(in_out)
         }
@@ -150,15 +151,15 @@ impl AeadContext {
             use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 
             let unbound_key = UnboundKey::new(&AES_256_GCM, &self.key)
-                .map_err(|_| QuicError::Crypto("Failed to create key".to_string()))?;
+                .map_err(|_| QuicError::Crypto(crate::quic::error::CryptoError::Generic("Failed to create key".to_string())))?;
             let key = LessSafeKey::new(unbound_key);
 
             let nonce = Nonce::try_assume_unique_for_key(&nonce)
-                .map_err(|_| QuicError::Crypto("Invalid nonce".to_string()))?;
+                .map_err(|_| QuicError::Crypto(crate::quic::error::CryptoError::Generic("Invalid nonce".to_string())))?;
 
             let mut in_out = ciphertext.to_vec();
             key.open_in_place(nonce, Aad::from(aad), &mut in_out)
-                .map_err(|_| QuicError::Crypto("Decryption failed".to_string()))?;
+                .map_err(|_| QuicError::Crypto(crate::quic::error::CryptoError::Decryption("Decryption failed".to_string())))?;
 
             // Remove the auth tag
             in_out.truncate(in_out.len() - 16);
@@ -169,7 +170,7 @@ impl AeadContext {
         {
             // Fallback implementation (not secure, for testing only)
             if ciphertext.len() < 16 {
-                return Err(QuicError::Crypto("Ciphertext too short".to_string()));
+                return Err(QuicError::Crypto(crate::quic::error::CryptoError::Generic("Ciphertext too short".to_string())));
             }
 
             let (data, _tag) = ciphertext.split_at(ciphertext.len() - 16);
@@ -184,7 +185,7 @@ impl AeadContext {
     /// Apply header protection
     pub fn protect_header(&self, header: &mut [u8], sample: &[u8]) -> Result<()> {
         if sample.len() < 16 {
-            return Err(QuicError::Crypto("Sample too short".to_string()));
+            return Err(QuicError::Crypto(crate::quic::error::CryptoError::Generic("Sample too short".to_string())));
         }
 
         // Generate header protection mask using AES-ECB
@@ -269,10 +270,11 @@ impl PacketProtection {
 
     /// Protect (encrypt) a packet
     pub fn protect_packet(&mut self, level: EncryptionLevel, header: &[u8], payload: &[u8]) -> Result<Vec<u8>> {
-        let context = self.contexts.get(&level)
-            .ok_or_else(|| QuicError::Crypto("No protection keys for level".to_string()))?;
-
+        // Get packet number first to avoid borrow conflicts
         let packet_number = self.next_packet_number(level);
+
+        let context = self.contexts.get(&level)
+            .ok_or_else(|| QuicError::Crypto(crate::quic::error::CryptoError::Generic("No protection keys for level".to_string())))?;
 
         // Encrypt payload
         let encrypted_payload = context.encrypt(payload, packet_number, header)?;
@@ -294,9 +296,10 @@ impl PacketProtection {
             // Use sample from encrypted payload for header protection
             let sample_offset = header.len() + pn_bytes.len() + 4; // Skip some bytes into payload
             if packet.len() >= sample_offset + 16 {
-                let sample = &packet[sample_offset..sample_offset + 16];
+                // Clone the sample to avoid borrow conflicts
+                let sample: Vec<u8> = packet[sample_offset..sample_offset + 16].to_vec();
                 let header_end = header.len() + pn_bytes.len();
-                context.protect_header(&mut packet[..header_end], sample)?;
+                context.protect_header(&mut packet[..header_end], &sample)?;
             }
         }
 
@@ -306,10 +309,10 @@ impl PacketProtection {
     /// Unprotect (decrypt) a packet
     pub fn unprotect_packet(&mut self, level: EncryptionLevel, packet: &mut [u8]) -> Result<(Vec<u8>, PacketNumber)> {
         let context = self.contexts.get(&level)
-            .ok_or_else(|| QuicError::Crypto("No protection keys for level".to_string()))?;
+            .ok_or_else(|| QuicError::Crypto(crate::quic::error::CryptoError::Generic("No protection keys for level".to_string())))?;
 
         if packet.len() < 21 {
-            return Err(QuicError::Crypto("Packet too short".to_string()));
+            return Err(QuicError::Crypto(crate::quic::error::CryptoError::Generic("Packet too short".to_string())));
         }
 
         // Remove header protection first
@@ -337,6 +340,15 @@ impl PacketProtection {
     /// Update largest acknowledged packet number
     pub fn set_largest_acked(&mut self, level: EncryptionLevel, pn: PacketNumber) {
         self.largest_acked.insert(level, pn);
+    }
+
+    /// Initialize keys for initial encryption level
+    pub fn initialize_keys(&mut self, connection_id: &[u8], _is_server: bool) -> Result<()> {
+        // Placeholder implementation for initial key derivation
+        // In a real implementation, this would derive Initial packet protection keys
+        // using HKDF with the connection ID as input
+        debug!("Initialized keys for connection ID: {:?}", hex::encode(connection_id));
+        Ok(())
     }
 }
 

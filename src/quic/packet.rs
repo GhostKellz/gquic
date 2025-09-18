@@ -495,6 +495,17 @@ impl Packet {
     pub fn packet_number(&self) -> PacketNumber {
         self.header.packet_number
     }
+
+    /// Parse packet from bytes (alias for decode)
+    pub fn parse(data: &[u8]) -> Result<Self> {
+        Self::decode(data)
+    }
+
+    /// Parse encrypted packet from bytes
+    pub fn parse_encrypted(data: &[u8], _crypto_key: &[u8]) -> Result<Self> {
+        // For now, just decode normally - encryption/decryption would happen here
+        Self::decode(data)
+    }
 }
 
 /// Packet builder for easier construction

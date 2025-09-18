@@ -368,9 +368,52 @@ impl QpackEncoder {
             );
 
             // Send insert instruction on encoder stream
-            self.encoder_stream.put_u8(0x80);
-            self.encode_string(&mut self.encoder_stream, name);
-            self.encode_string(&mut self.encoder_stream, value);
+            {
+                let encoder_stream = &mut self.encoder_stream;
+                encoder_stream.put_u8(0x80);
+
+                // Inline encode name
+                if self.config.huffman_encoding {
+                    encoder_stream.put_u8(0x80 | (name.len() as u8));
+                    encoder_stream.put_slice(name);
+                } else {
+                    let max_prefix = (1 << 7) - 1;
+                    let name_len = name.len() as u64;
+                    if name_len < max_prefix {
+                        encoder_stream.put_u8(name_len as u8);
+                    } else {
+                        encoder_stream.put_u8(max_prefix as u8);
+                        let mut remaining = name_len - max_prefix;
+                        while remaining >= 128 {
+                            encoder_stream.put_u8((remaining % 128 + 128) as u8);
+                            remaining /= 128;
+                        }
+                        encoder_stream.put_u8(remaining as u8);
+                    }
+                    encoder_stream.put_slice(name);
+                }
+
+                // Inline encode value
+                if self.config.huffman_encoding {
+                    encoder_stream.put_u8(0x80 | (value.len() as u8));
+                    encoder_stream.put_slice(value);
+                } else {
+                    let max_prefix = (1 << 7) - 1;
+                    let value_len = value.len() as u64;
+                    if value_len < max_prefix {
+                        encoder_stream.put_u8(value_len as u8);
+                    } else {
+                        encoder_stream.put_u8(max_prefix as u8);
+                        let mut remaining = value_len - max_prefix;
+                        while remaining >= 128 {
+                            encoder_stream.put_u8((remaining % 128 + 128) as u8);
+                            remaining /= 128;
+                        }
+                        encoder_stream.put_u8(remaining as u8);
+                    }
+                    encoder_stream.put_slice(value);
+                }
+            }
         }
 
         Ok(())
@@ -383,18 +426,18 @@ impl QpackEncoder {
     }
 
     /// Find name index
-    fn find_name_index(&self, name: &[u8]) -> u64 {
+    fn find_name_index(&self, name: &[u8]) -> Option<u64> {
         // Check static table
         if let Some(idx) = STATIC_TABLE.iter().position(|(n, _)| n == &name) {
-            return idx as u64;
+            return Some(idx as u64);
         }
 
         // Check dynamic table
         if let Some(idx) = self.dynamic_table.find_name(name) {
-            return idx + STATIC_TABLE.len() as u64;
+            return Some(idx + STATIC_TABLE.len() as u64);
         }
 
-        0
+        None
     }
 
     /// Should index this header
@@ -569,8 +612,23 @@ impl QpackDecoder {
         }
 
         // Send section acknowledgment
-        self.decoder_stream.put_u8(0x80);
-        self.encode_integer(&mut self.decoder_stream, 7, 0x00, stream_id);
+        {
+            let decoder_stream = &mut self.decoder_stream;
+            decoder_stream.put_u8(0x80);
+            // Inline the integer encoding to avoid borrow conflicts
+            let max_prefix = (1 << 7) - 1;
+            if stream_id < max_prefix {
+                decoder_stream.put_u8((0x00 | stream_id) as u8);
+            } else {
+                decoder_stream.put_u8(0x00 | (max_prefix as u8));
+                let mut remaining = stream_id - max_prefix;
+                while remaining >= 128 {
+                    decoder_stream.put_u8((remaining % 128 + 128) as u8);
+                    remaining /= 128;
+                }
+                decoder_stream.put_u8(remaining as u8);
+            }
+        }
 
         Ok(headers)
     }
@@ -1140,7 +1198,7 @@ impl TableOptimizer {
         let mut to_remove = Vec::new();
 
         for (i, entry) in table.entries.iter().enumerate() {
-            let usage_count = self.usage_tracker.get(&entry.insertion_count).copied().unwrap_or(0);
+            let usage_count = self.usage_tracker.get(&entry.index).copied().unwrap_or(0);
             if usage_count < self.optimization_threshold / 10 {
                 to_remove.push(i);
             }

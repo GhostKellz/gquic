@@ -34,6 +34,7 @@ pub enum ConnectionState {
 }
 
 /// QUIC connection state manager
+#[derive(Debug)]
 pub struct ConnectionStateManager {
     state: ConnectionState,
     created_at: Instant,

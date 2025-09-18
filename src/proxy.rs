@@ -375,7 +375,7 @@ impl GQuicProxy {
     /// Select upstream server for request
     async fn select_upstream(&self, _request: &Http3Request) -> Result<SocketAddr> {
         if self.config.upstreams.is_empty() {
-            return Err(QuicError::Protocol("No upstream servers configured".to_string()));
+            return Err(QuicError::Protocol(crate::quic::error::ProtocolError::InvalidState("No upstream servers configured".to_string())));
         }
 
         // Simple round-robin selection for now

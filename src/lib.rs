@@ -57,10 +57,16 @@ pub mod migration;
 pub mod qpack;
 pub mod ecn;
 pub mod batch;
+pub mod container;
+pub mod mesh_enhanced;
+pub mod performance;
+pub mod gpanel;
+pub mod gpanel_edge;
+pub mod gpanel_optimizations;
+pub mod gpanel_integration;
 
 pub use error::QuicError;
-pub use connection::{Connection, ConnectionId, ConnectionStats};
-pub use packet::Packet;
+pub use quic::{Connection, ConnectionId, ConnectionStats, Packet};
 pub use frame::Frame;
 pub use crypto::{CryptoBackend, PublicKey, PrivateKey, Signature, KeyPair};
 pub use handshake::{QuicHandshake, HandshakeState};
@@ -93,16 +99,28 @@ impl Endpoint {
         let mut buf = vec![0u8; 65535];
         let (len, addr) = self.socket.recv_from(&mut buf).await
             .map_err(|e| QuicError::Io(e))?;
-        
+
         buf.truncate(len);
         let packet = Packet::parse(&buf)?;
-        
+
         // For now, just create a basic connection
-        let conn_id = packet.connection_id();
-        let conn = Connection::new(conn_id.clone(), addr, self.socket.clone());
-        
-        self.connections.insert(conn_id.clone(), conn.clone());
+        let conn_id_bytes = packet.connection_id();
+        let conn_id = ConnectionId::from_bytes(conn_id_bytes);
+        let conn = Connection::new(conn_id.clone(), addr, self.socket.clone(), false); // Server connection
+
+        self.connections.insert(conn_id, conn.clone());
         Ok(conn)
+    }
+
+    /// Connect to a remote peer
+    pub async fn connect(&self, addr: SocketAddr, server_name: &str) -> QuicResult<Arc<Connection>> {
+        let conn_id = ConnectionId::new();
+        let conn = Connection::new(conn_id.clone(), addr, self.socket.clone(), true); // Client connection
+
+        // Initiate connection handshake
+        conn.initiate_handshake(server_name).await?;
+
+        Ok(Arc::new(conn))
     }
 
     /// Create a crypto-aware QUIC endpoint with encryption
@@ -143,10 +161,11 @@ impl CryptoEndpoint {
         buf.truncate(len);
         let packet = Packet::parse_encrypted(&buf, &self.crypto_key)?;
         
-        let conn_id = packet.connection_id();
-        let conn = Connection::new(conn_id.clone(), addr, self.socket.clone());
-        
-        self.connections.insert(conn_id.clone(), conn.clone());
+        let conn_id_bytes = packet.connection_id();
+        let conn_id = ConnectionId::from_bytes(conn_id_bytes);
+        let conn = Connection::new(conn_id.clone(), addr, self.socket.clone(), false); // Server connection
+
+        self.connections.insert(conn_id, conn.clone());
         Ok(conn)
     }
     

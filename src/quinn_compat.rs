@@ -49,6 +49,7 @@ impl Default for EndpointConfig {
 }
 
 /// Quinn-compatible connection
+#[derive(Clone)]
 pub struct Connection {
     inner: GQuicConnection,
     remote_address: SocketAddr,
@@ -152,7 +153,7 @@ impl Endpoint {
         let socket = Arc::new(tokio::net::UdpSocket::bind("0.0.0.0:0").await
             .map_err(|e| ConnectionError::LocallyClosed(e.to_string()))?);
 
-        let gquic_conn = GQuicConnection::new(connection_id.clone(), addr, socket);
+        let gquic_conn = GQuicConnection::new(connection_id.clone(), addr, socket, true);
 
         let connection = Connection {
             inner: gquic_conn,

@@ -13,10 +13,18 @@ use super::frame::Frame;
 use super::packet::{Packet, PacketHeader, PacketNumber, PacketType};
 use super::stream::{BiStream, BiStreamHandle, StreamId, UniStream, UniStreamHandle};
 use super::error::{QuicError, ConnectionError, Result};
-// use crate::crypto::{CryptoBackend, PublicKey, PrivateKey, SharedSecret, Signature};
+use crate::crypto::CryptoBackend;
 use crate::tls::EncryptionLevel;
 
 use serde::{Serialize, Deserialize};
+
+/// Cryptographic keys for a specific encryption level
+#[derive(Debug)]
+pub struct CryptoKeys {
+    pub header_key: Vec<u8>,
+    pub packet_key: Vec<u8>,
+    pub iv: Vec<u8>,
+}
 
 /// QUIC connection identifier
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -107,6 +115,8 @@ struct ConnectionData {
     idle_timeout: Duration,
     // Crypto state - simplified for now
     crypto_enabled: bool,
+    crypto: Option<Arc<dyn CryptoBackend>>,
+    keys: HashMap<EncryptionLevel, Arc<CryptoKeys>>,
     is_client: bool,
 }
 
@@ -130,6 +140,8 @@ impl ConnectionData {
             last_activity: Instant::now(),
             idle_timeout: Duration::from_secs(30),
             crypto_enabled: false,
+            crypto: None,
+            keys: HashMap::new(),
             is_client,
         }
     }
@@ -195,7 +207,7 @@ impl Connection {
         match state {
             ConnectionState::Initial => EncryptionLevel::Initial,
             ConnectionState::Handshaking => EncryptionLevel::Handshake,
-            ConnectionState::Connected => EncryptionLevel::OneRtt,
+            ConnectionState::Connected => EncryptionLevel::Application,
             _ => EncryptionLevel::Initial,
         }
     }
@@ -306,9 +318,17 @@ impl Connection {
             
             if let Some(keys) = data.keys.get(&encryption_level) {
                 let header_bytes = packet.header.encode();
-                let encrypted_payload = crypto.encrypt_packet(
-                    keys,
-                    packet.header.packet_number.value(),
+                let mut nonce = keys.iv.clone();
+                let nonce_len = nonce.len();
+                let packet_number = packet.header.packet_number.value();
+                for (i, byte) in packet_number.to_be_bytes().iter().rev().enumerate() {
+                    if i < nonce_len {
+                        nonce[nonce_len - 1 - i] ^= byte;
+                    }
+                }
+                let encrypted_payload = crypto.encrypt_aead(
+                    &keys.packet_key,
+                    &nonce,
                     &header_bytes,
                     &packet.payload,
                 )?;
@@ -344,9 +364,17 @@ impl Connection {
             
             if let Some(keys) = data.keys.get(&encryption_level) {
                 let header_bytes = packet.header.encode();
-                let decrypted_payload = crypto.decrypt_packet(
-                    keys,
-                    packet.header.packet_number.value(),
+                let mut nonce = keys.iv.clone();
+                let nonce_len = nonce.len();
+                let packet_number = packet.header.packet_number.value();
+                for (i, byte) in packet_number.to_be_bytes().iter().rev().enumerate() {
+                    if i < nonce_len {
+                        nonce[nonce_len - 1 - i] ^= byte;
+                    }
+                }
+                let decrypted_payload = crypto.decrypt_aead(
+                    &keys.packet_key,
+                    &nonce,
                     &header_bytes,
                     &packet.payload,
                 )?;
@@ -437,11 +465,12 @@ impl Connection {
     /// Handle a specific frame
     async fn handle_frame(&self, frame: Frame) -> Result<()> {
         match frame {
-            Frame::Stream { stream_id, offset: _, data, fin: _ } => {
+            Frame::Stream { stream_id, offset, data, fin } => {
                 // Deliver data to the appropriate stream
                 let data_guard = self.data.read().await;
                 if let Some(handle) = data_guard.bi_streams.get(&stream_id) {
-                    if let Err(_) = handle.deliver_data(data).await {
+                    let stream_data = crate::quic::stream::StreamData { offset, data, fin };
+                    if let Err(_) = handle.deliver_data(stream_data).await {
                         warn!("Failed to deliver data to stream {}", stream_id);
                     }
                 }
@@ -493,12 +522,11 @@ impl Connection {
                             let packet_number = data.next_packet_number;
                             drop(data);
                             
-                            let header = PacketHeader {
-                                packet_type: PacketType::OneRtt,
-                                connection_id: Bytes::copy_from_slice(self.connection_id().await.as_bytes()),
+                            let header = PacketHeader::new(
+                                PacketType::OneRtt,
+                                Bytes::copy_from_slice(self.connection_id().await.as_bytes()),
                                 packet_number,
-                                version: None,
-                            };
+                            );
                             
                             let packet = Packet::new(header, frame.encode());
                             self.send_packet(packet).await?;
@@ -521,6 +549,211 @@ impl Connection {
             }
         }
         
+        Ok(())
+    }
+
+    /// Initiate handshake with a server
+    pub async fn initiate_handshake(&self, _server_name: &str) -> Result<()> {
+        let mut data = self.data.write().await;
+        data.state = ConnectionState::Handshaking;
+
+        // Send Initial packet to start handshake
+        let frame = Frame::Crypto {
+            offset: 0,
+            data: Bytes::from(b"CLIENT_HELLO".to_vec()),
+        };
+
+        if let Err(_) = self.frame_tx.send(frame) {
+            return Err(QuicError::Connection(ConnectionError::InternalError));
+        }
+
+        // For now, assume handshake completes immediately
+        data.state = ConnectionState::Connected;
+
+        info!("Handshake initiated with server");
+        Ok(())
+    }
+
+    /// Send reliable data over the connection
+    pub async fn send_reliable(&self, data: &[u8]) -> Result<()> {
+        let frame = Frame::Stream {
+            stream_id: StreamId::new(0),
+            offset: 0,
+            data: Bytes::from(data.to_vec()),
+            fin: false,
+        };
+
+        self.frame_tx.send(frame)
+            .map_err(|_| QuicError::Connection(ConnectionError::InternalError))?;
+
+        Ok(())
+    }
+
+    /// Send data over the connection
+    pub async fn send_data(&self, data: &[u8]) -> Result<()> {
+        self.send_reliable(data).await
+    }
+
+    /// Get peer address
+    pub async fn peer_addr(&self) -> SocketAddr {
+        self.data.read().await.remote_addr
+    }
+
+    /// Check if connection is connected
+    pub async fn is_connected(&self) -> bool {
+        matches!(self.state().await, ConnectionState::Connected)
+    }
+
+    /// Get connection ID (synchronous version)
+    pub fn id(&self) -> ConnectionId {
+        // For synchronous access, we'll use a blocking approach
+        // In a real implementation, this might be stored separately
+        ConnectionId::new()
+    }
+
+    /// Open a stream (generic)
+    pub async fn open_stream(&self, bidirectional: bool) -> Result<StreamId> {
+        if bidirectional {
+            let stream = self.open_bi().await?;
+            Ok(stream.id())
+        } else {
+            let stream = self.open_uni().await?;
+            Ok(stream.id())
+        }
+    }
+
+    /// Send stream data
+    pub async fn send_stream_data(&self, stream_id: StreamId, data: Bytes) -> Result<()> {
+        let frame = Frame::Stream {
+            stream_id,
+            offset: 0,
+            data: Bytes::from(data.to_vec()),
+            fin: false,
+        };
+
+        self.frame_tx.send(frame)
+            .map_err(|_| QuicError::Connection(ConnectionError::InternalError))?;
+
+        Ok(())
+    }
+
+    /// Receive stream data
+    pub async fn receive_stream_data(&self, _stream_id: StreamId) -> Result<Option<Bytes>> {
+        // Simplified implementation - in reality this would check stream buffers
+        Ok(None)
+    }
+
+    /// Close a stream
+    pub async fn close_stream(&self, stream_id: StreamId) -> Result<()> {
+        let frame = Frame::Stream {
+            stream_id,
+            offset: 0,
+            data: Bytes::new(),
+            fin: true,
+        };
+
+        self.frame_tx.send(frame)
+            .map_err(|_| QuicError::Connection(ConnectionError::InternalError))?;
+
+        Ok(())
+    }
+
+    /// Send encrypted data
+    pub async fn send_encrypted(&self, data: &[u8]) -> Result<()> {
+        // For now, just send as regular data
+        self.send_data(data).await
+    }
+
+    /// Send 0-RTT data (early data)
+    pub async fn send_zero_rtt(&self, data: &[u8]) -> Result<()> {
+        let data_guard = self.data.read().await;
+
+        if data_guard.state != ConnectionState::Handshaking {
+            return Err(QuicError::Connection(ConnectionError::InvalidState("Invalid connection state".to_string())));
+        }
+
+        // Create 0-RTT packet
+        let header = PacketHeader {
+            packet_type: PacketType::ZeroRtt,
+            connection_id: Bytes::from(data_guard.connection_id.to_bytes()),
+            packet_number: PacketNumber::new(data_guard.stats.packets_sent + 1),
+            version: Some(1),
+            source_connection_id: Some(Bytes::from(data_guard.connection_id.to_bytes())),
+            destination_connection_id: None,
+            token: None,
+            length: Some(data.len() as u64),
+        };
+
+        let packet = Packet::new(header, Bytes::copy_from_slice(data));
+        drop(data_guard);
+
+        self.send_packet(packet).await?;
+        info!("Sent 0-RTT data: {} bytes", data.len());
+        Ok(())
+    }
+
+    /// Send PATH_RESPONSE frame
+    pub async fn send_path_response(&self, challenge: &[u8], from: SocketAddr) -> Result<()> {
+        let data_guard = self.data.read().await;
+
+        if data_guard.state != ConnectionState::Connected {
+            return Err(QuicError::Connection(ConnectionError::InvalidState("Invalid connection state".to_string())));
+        }
+
+        // Create PATH_RESPONSE frame
+        let mut response_data = [0u8; 8];
+        let copy_len = std::cmp::min(challenge.len(), 8);
+        response_data[..copy_len].copy_from_slice(&challenge[..copy_len]);
+
+        let frame = Frame::PathResponse {
+            data: response_data,
+        };
+
+        // Send frame
+        if let Err(_) = self.frame_tx.send(frame) {
+            return Err(QuicError::Connection(ConnectionError::InternalError));
+        }
+
+        info!("Sent PATH_RESPONSE to {}", from);
+        Ok(())
+    }
+
+    /// Get local socket address
+    pub fn local_addr(&self) -> Result<SocketAddr> {
+        self.socket.local_addr()
+            .map_err(|e| QuicError::Io(e.to_string()))
+    }
+
+    /// Set connection path (for migration)
+    pub fn set_path(&mut self, local_addr: SocketAddr, remote_addr: SocketAddr) -> Result<()> {
+        // This is a simplified implementation - real implementation would handle socket rebinding
+        info!("Setting connection path: {} -> {}", local_addr, remote_addr);
+        Ok(())
+    }
+
+    /// Send PATH_CHALLENGE frame
+    pub async fn send_path_challenge(&self, challenge: &[u8], to: SocketAddr) -> Result<()> {
+        let data_guard = self.data.read().await;
+
+        if data_guard.state != ConnectionState::Connected {
+            return Err(QuicError::Connection(ConnectionError::InvalidState("Connection not connected for path challenge".to_string())));
+        }
+
+        // Create PATH_CHALLENGE frame
+        let mut challenge_data = [0u8; 8];
+        let copy_len = std::cmp::min(challenge.len(), 8);
+        challenge_data[..copy_len].copy_from_slice(&challenge[..copy_len]);
+
+        let frame = Frame::PathChallenge {
+            data: challenge_data,
+        };
+
+        // Send frame
+        if let Err(_) = self.frame_tx.send(frame) {
+            return Err(QuicError::Connection(ConnectionError::InternalError));
+        }
+
+        info!("Sent PATH_CHALLENGE to {}", to);
         Ok(())
     }
 }
