@@ -432,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_client_handshake_start() {
-        let connection_id = ConnectionId::new(b"test_conn_id");
+        let connection_id = ConnectionId::from_bytes(b"test_conn_id");
         let mut handshake = QuicHandshake::new_client(connection_id, "example.com".to_string()).unwrap();
 
         let frames = handshake.start_client_handshake().unwrap();
@@ -451,7 +451,7 @@ mod tests {
 
     #[test]
     fn test_server_handshake_creation() {
-        let connection_id = ConnectionId::new(b"test_conn_id");
+        let connection_id = ConnectionId::from_bytes(b"test_conn_id");
         let private_key = PrivateKey {
             data: vec![0; 32],
             key_type: KeyType::Ed25519,

@@ -1293,8 +1293,8 @@ mod tests {
         let mut codec = QpackCodec::new(4096);
 
         let headers = vec![
-            Http3Header::new(b":method", b"GET"),
-            Http3Header::new(b":path", b"/test"),
+            Http3Header::new(b":method".as_slice(), b"GET".as_slice()),
+            Http3Header::new(b":path".as_slice(), b"/test".as_slice()),
         ];
 
         let encoded = codec.encode_headers(&headers).unwrap();

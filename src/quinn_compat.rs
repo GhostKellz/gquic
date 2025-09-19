@@ -513,7 +513,7 @@ mod tests {
 
         // Test connection (would fail in real scenario without server)
         // This is just testing the API compatibility
-        let remote_addr = "127.0.0.1:4433".parse().unwrap();
+        let remote_addr: std::net::SocketAddr = "127.0.0.1:4433".parse().unwrap();
 
         // In a real test, we'd need a server running
         // let connection = endpoint.connect(remote_addr, "localhost").await.unwrap();

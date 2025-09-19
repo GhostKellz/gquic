@@ -208,7 +208,7 @@ pub struct GamingPerformanceMetrics {
 }
 
 /// Network impact on gaming performance
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum NetworkGamingImpact {
     /// No measurable impact
     None,

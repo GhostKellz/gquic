@@ -133,6 +133,16 @@ pub struct DerpConfig {
     pub fallback_strategy: DerpFallbackStrategy,
 }
 
+impl Default for DerpConfig {
+    fn default() -> Self {
+        Self {
+            servers: Vec::new(),
+            region_preference: RegionPreference::LowestLatency,
+            fallback_strategy: DerpFallbackStrategy::Automatic,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DerpServer {
     pub url: String,

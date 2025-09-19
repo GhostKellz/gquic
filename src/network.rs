@@ -641,7 +641,7 @@ mod tests {
 
         let interface = NetworkInterface::new(config).await.unwrap();
 
-        let connection_id = ConnectionId::new(vec![1, 2, 3, 4]);
+        let connection_id = ConnectionId::from_bytes(&[1, 2, 3, 4]);
         let peer_addr = "127.0.0.1:8080".parse().unwrap();
 
         // Create connection

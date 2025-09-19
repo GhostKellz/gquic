@@ -782,7 +782,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_multipath_creation() {
-        let connection_id = ConnectionId::new(vec![1, 2, 3, 4]);
+        let connection_id = ConnectionId::from_bytes(&[1, 2, 3, 4]);
         let config = MultiPathConfig::default();
         let mux_config = AdvancedMuxConfig::default();
 
@@ -807,7 +807,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_path_management() {
-        let connection_id = ConnectionId::new(vec![1, 2, 3, 4]);
+        let connection_id = ConnectionId::from_bytes(&[1, 2, 3, 4]);
         let config = MultiPathConfig::default();
         let mux_config = AdvancedMuxConfig::default();
 
