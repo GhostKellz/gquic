@@ -1,918 +1,955 @@
-# 🔗 gquic Integration Guide for GhostChain Ecosystem
+# 🔗 GQUIC Integration Guide for GhostChain Ecosystem
 
-This guide shows how to integrate **gquic** with your Zig and Rust blockchain projects in the GhostChain ecosystem.
+This comprehensive guide demonstrates how to integrate **gquic** with modern blockchain projects in the GhostChain ecosystem, including Etherlink, RVM, GhostPlane, and the rebuilt GhostBridge.
 
 ## Table of Contents
 
 - [Overview](#overview)
-- [Rust Integration](#rust-integration)
-- [Zig Integration (FFI)](#zig-integration-ffi)
-- [WalletD Integration](#walletd-integration)
-- [GhostD Integration](#ghostd-integration)
-- [GhostBridge Integration](#ghostbridge-integration)
-- [Example Projects](#example-projects)
-- [Performance Considerations](#performance-considerations)
+- [Etherlink Integration](#etherlink-integration)
+- [RVM Plugin Integration](#rvm-plugin-integration)
+- [GhostPlane Zig L2 Integration](#ghostplane-zig-l2-integration)
+- [GhostBridge Cross-Chain Integration](#ghostbridge-cross-chain-integration)
+- [Advanced Rust Integration](#advanced-rust-integration)
+- [Zig FFI Patterns](#zig-ffi-patterns)
+- [DNS over QUIC](#dns-over-quic)
+- [Performance Optimization](#performance-optimization)
+- [Production Deployment](#production-deployment)
 
 ## Overview
 
-**gquic** provides multiple integration points for GhostChain ecosystem projects:
+**gquic** provides high-performance networking infrastructure for the next-generation GhostChain ecosystem:
 
-| Project Type | Integration Method | Use Case |
-|-------------|-------------------|----------|
-| Rust Services | Native crate dependency | `walletd`, `ghostd`, `ghostbridge` |
-| Zig Projects | FFI (C-compatible) | `zwallet`, `realid`, `enoc`, `wraith` |
-| gRPC Services | Built-in protobuf support | Service-to-service communication |
-| Daemon Mode | `gquicd` binary | Standalone QUIC proxy/gateway |
+| Project | Language | Integration Method | Use Case |
+|---------|----------|-------------------|----------|
+| **Etherlink** | Rust | Native gRPC/QUIC client | Secure Rust-Zig bridge communication |
+| **RVM** | Rust | Plugin system integration | VM networking and runtime hooks |
+| **GhostPlane** | Zig + Rust | FFI bridge + native Rust | L2 execution engine with mesh networking |
+| **GhostBridge** | Rust | Cross-chain QUIC transport | Ultra-fast cross-chain communication |
+| **Legacy Projects** | Zig/C | FFI (C-compatible) | Backward compatibility |
 
-## Rust Integration
+## Etherlink Integration
 
-### Adding gquic to Your Rust Project
+**Etherlink** is a Rust-native bridge providing secure communication between Rust and Zig technologies with gRPC/QUIC transport.
+
+### Setting Up Etherlink with GQUIC
 
 Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-gquic = { path = "../gquic", features = ["gcrypt-integration", "metrics"] }
+gquic = { git = "https://github.com/ghostkellz/gquic", features = ["gcc-crypto", "rustls-tls"] }
+etherlink = { git = "https://github.com/ghostkellz/etherlink" }
 tokio = { version = "1.0", features = ["full"] }
+tonic = "0.10"
+prost = "0.12"
 anyhow = "1.0"
+tracing = "0.1"
 ```
 
-### Basic Client Integration
+### Etherlink gRPC/QUIC Client
 
 ```rust
-// src/quic_client.rs
+// etherlink/src/bridge_client.rs
 use gquic::prelude::*;
+use tonic::{transport::Channel, Request, Response};
 use anyhow::Result;
 
-pub struct GhostChainClient {
-    client: QuicClient,
-    pool: ConnectionPool,
+pub struct EtherlinkBridgeClient {
+    quic_client: QuicClient,
+    grpc_channel: Channel,
+    connection_pool: ConnectionPool,
 }
 
-impl GhostChainClient {
+impl EtherlinkBridgeClient {
+    pub async fn new(bridge_endpoint: &str) -> Result<Self> {
+        // Configure QUIC with Etherlink-specific settings
+        let quic_config = QuicClientConfig::builder()
+            .server_name("etherlink.ghostchain.local".to_string())
+            .with_alpn("grpc")
+            .with_alpn("etherlink-bridge")
+            .max_idle_timeout(60_000)
+            .keep_alive_interval(20_000)
+            .max_concurrent_streams(1000)
+            .build();
+
+        let client = QuicClient::new(quic_config)?;
+
+        // Create gRPC channel over QUIC
+        let channel = tonic::transport::Endpoint::from_shared(bridge_endpoint)?
+            .connect_with_connector(QuicGrpcConnector::new(client.clone()))
+            .await?;
+
+        let pool = ConnectionPool::new(PoolConfig::builder()
+            .max_connections_per_endpoint(50)
+            .enable_multiplexing(true)
+            .build());
+
+        Ok(Self {
+            quic_client: client,
+            grpc_channel: channel,
+            connection_pool: pool,
+        })
+    }
+
+    pub async fn bridge_zig_call(
+        &self,
+        zig_function: &str,
+        payload: &[u8],
+    ) -> Result<Vec<u8>> {
+        // Create secure bridge request
+        let request = BridgeRequest {
+            target: "ghostplane".to_string(),
+            function: zig_function.to_string(),
+            payload: payload.to_vec(),
+            safety_checks: true,
+            timeout_ms: 5000,
+        };
+
+        // Send over QUIC with memory safety guarantees
+        let mut client = BridgeServiceClient::new(self.grpc_channel.clone());
+        let response = client.execute_bridge_call(Request::new(request)).await?;
+
+        Ok(response.into_inner().result)
+    }
+}
+```
+
+## RVM Plugin Integration
+
+**RVM** (Rust Virtual Machine) is a stack-based bytecode execution engine with a modular plugin system that can leverage GQUIC for networking operations.
+
+### Setting Up RVM with GQUIC Networking Plugin
+
+Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+gquic = { git = "https://github.com/ghostkellz/gquic", features = ["gcc-crypto", "hardware-accel"] }
+rvm = { git = "https://github.com/ghostkellz/rvm" }
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3"
+tokio = { version = "1.0", features = ["full"] }
+```
+
+### RVM Network Plugin Implementation
+
+```rust
+// rvm-plugins/src/quic_network.rs
+use gquic::prelude::*;
+use rvm_core::{Plugin, VmContext, OpCode, Stack, Value};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+pub struct QuicNetworkPlugin {
+    client: QuicClient,
+    connections: Arc<RwLock<HashMap<String, Connection>>>,
+    gas_counter: Arc<AtomicU64>,
+}
+
+impl QuicNetworkPlugin {
     pub fn new() -> Result<Self> {
         let config = QuicClientConfig::builder()
-            .server_name("ghostchain.local".to_string())
-            .with_alpn("ghostchain-v1")
-            .with_alpn("grpc")
-            .max_idle_timeout(30_000)
+            .server_name("rvm.ghostchain.local".to_string())
+            .with_alpn("rvm-net")
+            .max_idle_timeout(300_000) // 5 minutes for long-running VM operations
             .build();
 
         let client = QuicClient::new(config)?;
-        let pool = ConnectionPool::new(PoolConfig::default());
 
-        Ok(Self { client, pool })
-    }
-
-    pub async fn send_transaction(&self, addr: SocketAddr, tx_data: &[u8]) -> Result<Vec<u8>> {
-        let conn = match self.pool.get_connection(addr).await {
-            Some(conn) => conn,
-            None => {
-                let conn = self.client.connect(addr).await?;
-                self.pool.return_connection(addr, conn.clone()).await;
-                conn
-            }
-        };
-
-        let mut stream = self.client.open_bi_stream(&conn).await?;
-        stream.write_all(tx_data).await?;
-        stream.finish().await?;
-        
-        let response = stream.read_to_end(64 * 1024).await?;
-        Ok(response)
+        Ok(Self {
+            client,
+            connections: Arc::new(RwLock::new(HashMap::new())),
+            gas_counter: Arc::new(AtomicU64::new(0)),
+        })
     }
 }
-```
 
-### Basic Server Integration
+#[async_trait::async_trait]
+impl Plugin for QuicNetworkPlugin {
+    fn name(&self) -> &str {
+        "quic_network"
+    }
 
-```rust
-// src/quic_server.rs
-use gquic::prelude::*;
-use gquic::server::handler::{ConnectionHandler, DefaultHandler};
-use async_trait::async_trait;
+    fn opcodes(&self) -> Vec<OpCode> {
+        vec![
+            OpCode::Custom(0x80), // NET_CONNECT
+            OpCode::Custom(0x81), // NET_SEND
+            OpCode::Custom(0x82), // NET_RECV
+            OpCode::Custom(0x83), // NET_CLOSE
+        ]
+    }
 
-pub struct GhostChainHandler {
-    // Your blockchain state, database connections, etc.
-}
-
-#[async_trait]
-impl ConnectionHandler for GhostChainHandler {
-    async fn handle_connection(
+    async fn execute_opcode(
         &self,
-        connection: NewConnection,
-        _config: Arc<QuicServerConfig>,
-    ) -> Result<()> {
-        let remote_addr = connection.connection.remote_address();
-        tracing::info!("New blockchain connection from {}", remote_addr);
+        opcode: OpCode,
+        stack: &mut Stack,
+        ctx: &mut VmContext,
+    ) -> rvm_core::Result<()> {
+        // Charge gas for network operations
+        self.charge_gas(ctx, 1000)?;
 
-        while let Ok((mut send, mut recv)) = connection.bi_streams.accept().await {
-            let handler = self.clone();
-            tokio::spawn(async move {
-                // Read request
-                let request_data = recv.read_to_end(1024 * 1024).await?; // 1MB max
-                
-                // Process blockchain request
-                let response = handler.process_request(&request_data).await?;
-                
-                // Send response
-                send.write_all(&response).await?;
-                send.finish().await?;
-                
-                Ok::<(), anyhow::Error>(())
-            });
+        match opcode {
+            OpCode::Custom(0x80) => self.net_connect(stack, ctx).await,
+            OpCode::Custom(0x81) => self.net_send(stack, ctx).await,
+            OpCode::Custom(0x82) => self.net_recv(stack, ctx).await,
+            OpCode::Custom(0x83) => self.net_close(stack, ctx).await,
+            _ => Err(rvm_core::Error::InvalidOpcode),
+        }
+    }
+}
+
+impl QuicNetworkPlugin {
+    async fn net_connect(&self, stack: &mut Stack, ctx: &mut VmContext) -> rvm_core::Result<()> {
+        let addr_bytes = stack.pop()?.as_bytes()?;
+        let addr_str = String::from_utf8(addr_bytes)
+            .map_err(|_| rvm_core::Error::InvalidAddress)?;
+
+        let socket_addr: SocketAddr = addr_str.parse()
+            .map_err(|_| rvm_core::Error::InvalidAddress)?;
+
+        // Establish QUIC connection with gas limits
+        let connection = self.client.connect(socket_addr).await
+            .map_err(|_| rvm_core::Error::NetworkError)?;
+
+        let conn_id = uuid::Uuid::new_v4().to_string();
+        self.connections.write().await.insert(conn_id.clone(), connection);
+
+        // Push connection ID onto stack
+        stack.push(Value::Bytes(conn_id.into_bytes()))?;
+        Ok(())
+    }
+
+    async fn net_send(&self, stack: &mut Stack, ctx: &mut VmContext) -> rvm_core::Result<()> {
+        let data = stack.pop()?.as_bytes()?;
+        let conn_id_bytes = stack.pop()?.as_bytes()?;
+        let conn_id = String::from_utf8(conn_id_bytes)
+            .map_err(|_| rvm_core::Error::InvalidConnectionId)?;
+
+        let connections = self.connections.read().await;
+        let connection = connections.get(&conn_id)
+            .ok_or(rvm_core::Error::ConnectionNotFound)?;
+
+        // Send data over QUIC with VM gas accounting
+        let mut stream = connection.open_uni().await
+            .map_err(|_| rvm_core::Error::NetworkError)?;
+
+        stream.write_all(&data).await
+            .map_err(|_| rvm_core::Error::NetworkError)?;
+        stream.finish().await
+            .map_err(|_| rvm_core::Error::NetworkError)?;
+
+        // Charge gas proportional to data size
+        self.charge_gas(ctx, data.len() as u64)?;
+
+        stack.push(Value::Bool(true))?; // Success
+        Ok(())
+    }
+
+    fn charge_gas(&self, ctx: &mut VmContext, amount: u64) -> rvm_core::Result<()> {
+        let current_gas = self.gas_counter.load(Ordering::Relaxed);
+        let new_gas = current_gas + amount;
+
+        if new_gas > ctx.gas_limit() {
+            return Err(rvm_core::Error::OutOfGas);
         }
 
+        self.gas_counter.store(new_gas, Ordering::Relaxed);
+        ctx.set_gas_used(new_gas);
         Ok(())
     }
 }
-
-impl GhostChainHandler {
-    async fn process_request(&self, data: &[u8]) -> Result<Vec<u8>> {
-        // Parse request (protobuf, JSON, etc.)
-        // Execute blockchain operation
-        // Return serialized response
-        Ok(b"response".to_vec())
-    }
-}
-
-pub async fn start_ghostchain_server() -> Result<()> {
-    let handler = GhostChainHandler::new();
-    
-    let server = QuicServer::builder()
-        .bind("0.0.0.0:9090".parse()?)
-        .with_tls_files("certs/server.crt", "certs/server.key")?
-        .with_alpn("ghostchain-v1")
-        .with_handler(Arc::new(handler))
-        .max_concurrent_bidi_streams(2000)
-        .build()?;
-
-    server.run().await
-}
 ```
 
-## Zig Integration (FFI)
+## GhostPlane Zig L2 Integration
 
-### Building gquic for FFI
+**GhostPlane** demonstrates high-performance Zig + Rust integration patterns for Layer 2 blockchain execution environments with mesh networking over QUIC.
+
+### Generic FFI Bridge Pattern
+
+This pattern works for any Zig project that needs QUIC networking capabilities:
+
+### Building GQUIC with FFI Support
 
 ```bash
-# Build with FFI support
-cargo build --release --features ffi
+# Build with all features for maximum compatibility
+cargo build --release --features "ffi,gcc-crypto,hardware-accel"
+
+# For Zig projects specifically
+cargo build --release --features "ffi,ring-crypto" --target-dir target/zig-ffi
 ```
 
-This creates `libgquic.so` (Linux) or `libgquic.dylib` (macOS) in `target/release/`.
+This creates platform-specific libraries:
+- Linux: `libgquic.so`
+- macOS: `libgquic.dylib`
+- Windows: `gquic.dll`
 
-### Zig FFI Bindings
+### Modern Zig FFI Bindings
 
-Create `src/gquic.zig`:
+Create `src/gquic.zig` for any Zig project:
 
 ```zig
 const std = @import("std");
-const c = @cImport({
-    @cInclude("gquic_ffi.h");
-});
+const builtin = @import("builtin");
 
-pub const GQuicError = error{
-    InvalidParam,
-    ConnectionFailed,
-    StreamError,
-    InitFailed,
+// Dynamic library loading for cross-platform support
+const lib_name = switch (builtin.target.os.tag) {
+    .linux => "libgquic.so",
+    .macos => "libgquic.dylib",
+    .windows => "gquic.dll",
+    else => @compileError("Unsupported platform"),
 };
 
-pub const GQuicClient = struct {
-    handle: ?*c.GQuicClient,
+// Modern Zig FFI with comptime safety
+pub const GQUIC_OK: c_int = 0;
+pub const GQUIC_ERROR: c_int = -1;
+pub const GQUIC_INVALID_PARAM: c_int = -2;
+pub const GQUIC_CONNECTION_FAILED: c_int = -3;
+
+// Opaque handles - safer than raw pointers
+pub const GQuicClient = opaque {};
+pub const GQuicServer = opaque {};
+pub const GQuicConnection = opaque {};
+
+// Modern error handling
+pub const GQuicError = error{
+    InitFailed,
+    ConnectionFailed,
+    StreamError,
+    InvalidParam,
+    OutOfMemory,
+    Timeout,
+};
+
+// External function declarations
+extern "c" fn gquic_client_new(server_name: [*:0]const u8, client_out: *?*GQuicClient) c_int;
+extern "c" fn gquic_client_connect(client: *GQuicClient, addr: [*:0]const u8, conn_out: *?*GQuicConnection) c_int;
+extern "c" fn gquic_send_data(conn: *GQuicConnection, data: [*]const u8, len: usize) c_int;
+extern "c" fn gquic_recv_data(conn: *GQuicConnection, buffer: [*]u8, buffer_len: usize, received_len: *usize) c_int;
+extern "c" fn gquic_client_destroy(client: *GQuicClient) void;
+
+// High-level Zig wrapper
+pub const QuicClient = struct {
+    handle: *GQuicClient,
+    allocator: std.mem.Allocator,
 
     const Self = @This();
 
-    pub fn init(server_name: []const u8) !Self {
-        var client: ?*c.GQuicClient = null;
-        const server_name_cstr = try std.cstr.addNullByte(std.heap.c_allocator, server_name);
-        defer std.heap.c_allocator.free(server_name_cstr);
+    pub fn init(allocator: std.mem.Allocator, server_name: []const u8) !Self {
+        // Ensure null termination for C FFI
+        const c_server_name = try allocator.dupeZ(u8, server_name);
+        defer allocator.free(c_server_name);
 
-        const result = c.gquic_client_new(server_name_cstr.ptr, &client);
-        if (result != c.GQUIC_OK) {
+        var client: ?*GQuicClient = null;
+        const result = gquic_client_new(c_server_name.ptr, &client);
+
+        if (result != GQUIC_OK or client == null) {
             return GQuicError.InitFailed;
         }
 
-        return Self{ .handle = client };
-    }
-
-    pub fn connect(self: *Self, addr: []const u8) !?*anyopaque {
-        const addr_cstr = try std.cstr.addNullByte(std.heap.c_allocator, addr);
-        defer std.heap.c_allocator.free(addr_cstr);
-
-        var connection: ?*anyopaque = null;
-        const result = c.gquic_client_connect(self.handle, addr_cstr.ptr, &connection);
-        
-        return switch (result) {
-            c.GQUIC_OK => connection,
-            c.GQUIC_CONNECTION_FAILED => GQuicError.ConnectionFailed,
-            else => GQuicError.InvalidParam,
+        return Self{
+            .handle = client.?,
+            .allocator = allocator,
         };
     }
 
-    pub fn sendData(self: *Self, connection: *anyopaque, data: []const u8) !void {
-        const result = c.gquic_client_send_data(
-            self.handle,
-            connection,
-            data.ptr,
-            data.len,
-        );
+    pub fn connect(self: *Self, address: []const u8) !Connection {
+        const c_address = try self.allocator.dupeZ(u8, address);
+        defer self.allocator.free(c_address);
 
-        if (result != c.GQUIC_OK) {
+        var conn: ?*GQuicConnection = null;
+        const result = gquic_client_connect(self.handle, c_address.ptr, &conn);
+
+        return switch (result) {
+            GQUIC_OK => Connection{ .handle = conn.?, .allocator = self.allocator },
+            GQUIC_CONNECTION_FAILED => GQuicError.ConnectionFailed,
+            GQUIC_INVALID_PARAM => GQuicError.InvalidParam,
+            else => GQuicError.InitFailed,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        gquic_client_destroy(self.handle);
+    }
+};
+
+pub const Connection = struct {
+    handle: *GQuicConnection,
+    allocator: std.mem.Allocator,
+
+    const Self = @This();
+
+    pub fn send(self: *Self, data: []const u8) !void {
+        const result = gquic_send_data(self.handle, data.ptr, data.len);
+        if (result != GQUIC_OK) {
             return GQuicError.StreamError;
         }
     }
 
-    pub fn deinit(self: *Self) void {
-        if (self.handle) |handle| {
-            c.gquic_client_destroy(handle);
-            self.handle = null;
-        }
-    }
-};
+    pub fn receive(self: *Self, buffer: []u8) ![]u8 {
+        var received_len: usize = 0;
+        const result = gquic_recv_data(
+            self.handle,
+            buffer.ptr,
+            buffer.len,
+            &received_len
+        );
 
-pub const GQuicServer = struct {
-    handle: ?*c.GQuicServer,
-
-    const Self = @This();
-
-    pub fn init(config: ServerConfig) !Self {
-        const c_config = c.GQuicConfig{
-            .bind_addr = config.bind_addr.ptr,
-            .cert_path = config.cert_path.ptr,
-            .key_path = config.key_path.ptr,
-            .alpn_protocols = config.alpn_protocols.ptr,
-            .alpn_count = config.alpn_protocols.len,
-            .max_connections = config.max_connections,
-            .use_self_signed = if (config.use_self_signed) 1 else 0,
+        return switch (result) {
+            GQUIC_OK => buffer[0..received_len],
+            else => GQuicError.StreamError,
         };
-
-        var server: ?*c.GQuicServer = null;
-        const result = c.gquic_server_new(&c_config, &server);
-        
-        if (result != c.GQUIC_OK) {
-            return GQuicError.InitFailed;
-        }
-
-        return Self{ .handle = server };
-    }
-
-    pub fn start(self: *Self, callback: c.GQuicConnectionCallback, user_data: ?*anyopaque) !void {
-        const result = c.gquic_server_start(self.handle, callback, user_data);
-        if (result != c.GQUIC_OK) {
-            return GQuicError.InitFailed;
-        }
-    }
-
-    pub fn deinit(self: *Self) void {
-        if (self.handle) |handle| {
-            c.gquic_server_destroy(handle);
-            self.handle = null;
-        }
     }
 };
 
-pub const ServerConfig = struct {
-    bind_addr: [*:0]const u8,
-    cert_path: [*:0]const u8,
-    key_path: [*:0]const u8,
-    alpn_protocols: [*][*:0]const u8,
-    max_connections: u32,
-    use_self_signed: bool,
-};
 ```
 
-### C Header File
-
-Create `include/gquic_ffi.h`:
-
-```c
-#ifndef GQUIC_FFI_H
-#define GQUIC_FFI_H
-
-#include <stdint.h>
-#include <stddef.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-// Error codes
-#define GQUIC_OK 0
-#define GQUIC_ERROR -1
-#define GQUIC_INVALID_PARAM -2
-#define GQUIC_CONNECTION_FAILED -3
-#define GQUIC_STREAM_ERROR -4
-
-// Opaque types
-typedef struct GQuicClient GQuicClient;
-typedef struct GQuicServer GQuicServer;
-
-// Callback types
-typedef void (*GQuicConnectionCallback)(const void* user_data, int status);
-typedef void (*GQuicDataCallback)(const void* user_data, const uint8_t* data, size_t len);
-
-// Configuration
-typedef struct {
-    const char* bind_addr;
-    const char* cert_path;
-    const char* key_path;
-    const char* const* alpn_protocols;
-    size_t alpn_count;
-    uint32_t max_connections;
-    int use_self_signed;
-} GQuicConfig;
-
-// Client API
-int gquic_client_new(const char* server_name, GQuicClient** client_out);
-int gquic_client_connect(GQuicClient* client, const char* addr, void** connection_out);
-int gquic_client_send_data(GQuicClient* client, void* connection, const uint8_t* data, size_t data_len);
-void gquic_client_destroy(GQuicClient* client);
-
-// Server API
-int gquic_server_new(const GQuicConfig* config, GQuicServer** server_out);
-int gquic_server_start(GQuicServer* server, GQuicConnectionCallback callback, const void* user_data);
-void gquic_server_destroy(GQuicServer* server);
-
-// Utility
-const char* gquic_version(void);
-int gquic_init_logging(int level);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif // GQUIC_FFI_H
-```
-
-### Example Zig Usage
+### Example Usage in Zig L2 Projects
 
 ```zig
-// main.zig
+// ghostplane/src/network.zig - Example L2 networking
 const std = @import("std");
 const gquic = @import("gquic.zig");
 
-pub fn main() !void {
-    // Initialize logging
-    _ = gquic.c.gquic_init_logging(2); // INFO level
-
-    // Create client
-    var client = try gquic.GQuicClient.init("ghostchain.local");
-    defer client.deinit();
-
-    // Connect to server
-    const connection = try client.connect("127.0.0.1:9090");
-
-    // Send blockchain transaction
-    const tx_data = "transaction_data_here";
-    try client.sendData(connection, tx_data);
-
-    std.debug.print("Transaction sent successfully\\n");
-}
-```
-
-## WalletD Integration
-
-### gRPC-over-QUIC for WalletD
-
-```rust
-// walletd/src/quic_service.rs
-use gquic::prelude::*;
-use gquic::proto::walletd::{
-    wallet_service_server::{WalletService, WalletServiceServer},
-    *,
-};
-use tonic::{Request, Response, Status};
-
-#[derive(Default)]
-pub struct WalletServiceImpl {
-    // Your wallet state
-}
-
-#[tonic::async_trait]
-impl WalletService for WalletServiceImpl {
-    async fn create_account(
-        &self,
-        request: Request<CreateAccountRequest>,
-    ) -> Result<Response<CreateAccountResponse>, Status> {
-        let req = request.into_inner();
-        
-        // Use gquic crypto backend for key generation
-        let backend = gquic::crypto::default_backend();
-        let keypair = backend.generate_keypair(
-            match req.key_type() {
-                KeyType::Ed25519 => gquic::crypto::KeyType::Ed25519,
-                KeyType::Secp256k1 => gquic::crypto::KeyType::Secp256k1,
-                _ => return Err(Status::invalid_argument("Unsupported key type")),
-            }
-        ).map_err(|e| Status::internal(e.to_string()))?;
-
-        let response = CreateAccountResponse {
-            account_id: uuid::Uuid::new_v4().to_string(),
-            public_key: hex::encode(&keypair.public_key.data),
-            address: derive_address(&keypair.public_key),
-        };
-
-        Ok(Response::new(response))
-    }
-
-    async fn sign_data(
-        &self,
-        request: Request<SignDataRequest>,
-    ) -> Result<Response<SignDataResponse>, Status> {
-        let req = request.into_inner();
-        
-        // Load private key for account
-        let private_key = load_account_key(&req.account_id)
-            .map_err(|e| Status::not_found(e.to_string()))?;
-
-        // Sign with gquic crypto backend
-        let backend = gquic::crypto::default_backend();
-        let signature = backend.sign(&private_key, &req.data)
-            .map_err(|e| Status::internal(e.to_string()))?;
-
-        let response = SignDataResponse {
-            signature: signature.data,
-            public_key: hex::encode(&private_key.data), // Get public key
-            signature_type: match signature.signature_type {
-                gquic::crypto::SignatureType::Ed25519 => SignatureType::Ed25519,
-                gquic::crypto::SignatureType::EcdsaSecp256k1 => SignatureType::EcdsaSecp256k1,
-                _ => return Err(Status::internal("Unsupported signature type")),
-            } as i32,
-        };
-
-        Ok(Response::new(response))
-    }
-
-    // Implement other methods...
-}
-
-pub async fn start_walletd_quic_server() -> anyhow::Result<()> {
-    let wallet_service = WalletServiceImpl::default();
-
-    // Create gRPC handler for QUIC
-    let handler = GrpcHandler::new(WalletServiceServer::new(wallet_service));
-
-    let server = QuicServer::builder()
-        .bind("0.0.0.0:9090".parse()?)
-        .with_tls_files("certs/walletd.crt", "certs/walletd.key")?
-        .with_alpn("grpc")
-        .with_handler(Arc::new(handler))
-        .build()?;
-
-    tracing::info!("WalletD QUIC server starting on :9090");
-    server.run().await
-}
-```
-
-## GhostD Integration
-
-### P2P Communication over QUIC
-
-```rust
-// ghostd/src/p2p/quic_transport.rs
-use gquic::prelude::*;
-use std::collections::HashMap;
-use tokio::sync::RwLock;
-
-pub struct QuicP2PTransport {
-    client: QuicClient,
-    server: QuicServer,
-    peers: Arc<RwLock<HashMap<PeerId, Connection>>>,
-    pool: ConnectionPool,
-}
-
-impl QuicP2PTransport {
-    pub async fn new(bind_addr: SocketAddr) -> anyhow::Result<Self> {
-        let client = QuicClient::builder()
-            .server_name("ghostchain.p2p".to_string())
-            .with_alpn("ghostchain-p2p")
-            .build_client()?;
-
-        let handler = P2PHandler::new();
-        let server = QuicServer::builder()
-            .bind(bind_addr)
-            .with_self_signed_cert()? // Use proper certs in production
-            .with_alpn("ghostchain-p2p")
-            .with_handler(Arc::new(handler))
-            .build()?;
-
-        Ok(Self {
-            client,
-            server,
-            peers: Arc::new(RwLock::new(HashMap::new())),
-            pool: ConnectionPool::new(PoolConfig::default()),
-        })
-    }
-
-    pub async fn connect_peer(&self, peer_id: PeerId, addr: SocketAddr) -> anyhow::Result<()> {
-        let connection = self.client.connect(addr).await?;
-        
-        // Store connection for this peer
-        self.peers.write().await.insert(peer_id, connection.clone());
-        self.pool.return_connection(addr, connection).await;
-
-        tracing::info!("Connected to peer {} at {}", peer_id, addr);
-        Ok(())
-    }
-
-    pub async fn broadcast_block(&self, block: &Block) -> anyhow::Result<()> {
-        let block_data = serialize_block(block)?;
-        let peers = self.peers.read().await;
-
-        let mut tasks = Vec::new();
-        for (peer_id, connection) in peers.iter() {
-            let peer_id = *peer_id;
-            let connection = connection.clone();
-            let data = block_data.clone();
-            
-            tasks.push(tokio::spawn(async move {
-                let mut stream = connection.open_uni().await?;
-                
-                // Send message type + data
-                stream.write_all(&[MSG_TYPE_BLOCK]).await?;
-                stream.write_all(&data).await?;
-                stream.finish().await?;
-                
-                tracing::debug!("Broadcasted block to peer {}", peer_id);
-                Ok::<(), anyhow::Error>(())
-            }));
-        }
-
-        // Wait for all broadcasts to complete
-        for task in tasks {
-            if let Err(e) = task.await? {
-                tracing::warn!("Failed to broadcast to peer: {}", e);
-            }
-        }
-
-        Ok(())
-    }
-
-    pub async fn start(&self) -> anyhow::Result<()> {
-        self.server.run().await
-    }
-}
-
-struct P2PHandler;
-
-#[async_trait]
-impl ConnectionHandler for P2PHandler {
-    async fn handle_connection(
-        &self,
-        connection: NewConnection,
-        _config: Arc<QuicServerConfig>,
-    ) -> anyhow::Result<()> {
-        let remote_addr = connection.connection.remote_address();
-        tracing::info!("New P2P connection from {}", remote_addr);
-
-        // Handle incoming unidirectional streams (broadcasts)
-        while let Ok(mut recv) = connection.uni_streams.accept().await {
-            tokio::spawn(async move {
-                // Read message type
-                let mut msg_type = [0u8; 1];
-                recv.read_exact(&mut msg_type).await?;
-
-                match msg_type[0] {
-                    MSG_TYPE_BLOCK => {
-                        let block_data = recv.read_to_end(10 * 1024 * 1024).await?; // 10MB max
-                        let block = deserialize_block(&block_data)?;
-                        handle_received_block(block).await?;
-                    }
-                    MSG_TYPE_TRANSACTION => {
-                        let tx_data = recv.read_to_end(1024 * 1024).await?; // 1MB max
-                        let tx = deserialize_transaction(&tx_data)?;
-                        handle_received_transaction(tx).await?;
-                    }
-                    _ => {
-                        tracing::warn!("Unknown message type: {}", msg_type[0]);
-                    }
-                }
-
-                Ok::<(), anyhow::Error>(())
-            });
-        }
-
-        Ok(())
-    }
-}
-```
-
-## GhostBridge Integration
-
-### QUIC-to-HTTP/gRPC Proxy
-
-```rust
-// ghostbridge/src/proxy.rs
-use gquic::prelude::*;
-use hyper::{Body, Client, Request, Response};
-
-pub struct QuicHttpBridge {
-    quic_server: QuicServer,
-    http_client: Client<hyper::client::HttpConnector>,
-}
-
-impl QuicHttpBridge {
-    pub async fn new() -> anyhow::Result<Self> {
-        let handler = BridgeHandler::new();
-        
-        let server = QuicServer::builder()
-            .bind("0.0.0.0:443".parse()?)
-            .with_tls_files("certs/bridge.crt", "certs/bridge.key")?
-            .with_alpn("h3")        // HTTP/3
-            .with_alpn("grpc")      // gRPC-over-QUIC
-            .with_alpn("bridge")    // Custom protocol
-            .with_handler(Arc::new(handler))
-            .build()?;
-
-        Ok(Self {
-            quic_server: server,
-            http_client: Client::new(),
-        })
-    }
-
-    pub async fn start(&self) -> anyhow::Result<()> {
-        tracing::info!("GhostBridge QUIC proxy starting");
-        self.quic_server.run().await
-    }
-}
-
-struct BridgeHandler {
-    http_client: Client<hyper::client::HttpConnector>,
-}
-
-#[async_trait]
-impl ConnectionHandler for BridgeHandler {
-    async fn handle_connection(
-        &self,
-        connection: NewConnection,
-        _config: Arc<QuicServerConfig>,
-    ) -> anyhow::Result<()> {
-        // Determine protocol from ALPN
-        let protocol = detect_protocol(&connection)?;
-
-        match protocol {
-            Protocol::Http3 => self.handle_http3_connection(connection).await?,
-            Protocol::Grpc => self.handle_grpc_connection(connection).await?,
-            Protocol::Bridge => self.handle_bridge_connection(connection).await?,
-        }
-
-        Ok(())
-    }
-}
-
-impl BridgeHandler {
-    async fn handle_grpc_connection(&self, connection: NewConnection) -> anyhow::Result<()> {
-        while let Ok((mut send, mut recv)) = connection.bi_streams.accept().await {
-            let client = self.http_client.clone();
-            
-            tokio::spawn(async move {
-                // Read gRPC request from QUIC stream
-                let grpc_data = recv.read_to_end(10 * 1024 * 1024).await?;
-                
-                // Forward to HTTP/2 gRPC backend
-                let http_request = Request::builder()
-                    .method("POST")
-                    .uri("http://walletd-backend:8080/WalletService/CreateAccount")
-                    .header("content-type", "application/grpc")
-                    .body(Body::from(grpc_data))?;
-
-                let response = client.request(http_request).await?;
-                let response_data = hyper::body::to_bytes(response.into_body()).await?;
-
-                // Send response back over QUIC
-                send.write_all(&response_data).await?;
-                send.finish().await?;
-
-                Ok::<(), anyhow::Error>(())
-            });
-        }
-
-        Ok(())
-    }
-}
-```
-
-## Example Projects
-
-### Complete WalletD Service
-
-```rust
-// walletd-quic/src/main.rs
-use gquic::prelude::*;
-use std::env;
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
-
-    let bind_addr = env::var("WALLETD_BIND")
-        .unwrap_or_else(|_| "0.0.0.0:9090".to_string())
-        .parse()?;
-
-    let wallet_service = WalletServiceImpl::new().await?;
-    
-    let server = QuicServer::builder()
-        .bind(bind_addr)
-        .with_tls_files(
-            &env::var("TLS_CERT_PATH").unwrap_or_else(|_| "certs/server.crt".to_string()),
-            &env::var("TLS_KEY_PATH").unwrap_or_else(|_| "certs/server.key".to_string()),
-        )?
-        .with_alpn("grpc")
-        .with_handler(Arc::new(GrpcHandler::new(wallet_service)))
-        .max_concurrent_bidi_streams(1000)
-        .build()?;
-
-    tracing::info!("WalletD QUIC server listening on {}", bind_addr);
-    server.run().await
-}
-```
-
-### Zig Client Example
-
-```zig
-// zwallet/src/quic_client.zig
-const std = @import("std");
-const gquic = @import("gquic.zig");
-
-pub const WalletClient = struct {
-    client: gquic.GQuicClient,
-    connection: ?*anyopaque,
+pub const L2Network = struct {
+    client: gquic.QuicClient,
+    allocator: std.mem.Allocator,
 
     const Self = @This();
 
-    pub fn init(server_addr: []const u8) !Self {
-        var client = try gquic.GQuicClient.init("walletd.ghostchain.local");
-        const connection = try client.connect(server_addr);
-
+    pub fn init(allocator: std.mem.Allocator) !Self {
+        const client = try gquic.QuicClient.init(allocator, "ghostplane.local");
         return Self{
             .client = client,
-            .connection = connection,
+            .allocator = allocator,
         };
     }
 
-    pub fn createAccount(self: *Self, name: []const u8, passphrase: []const u8) ![]u8 {
-        // Serialize gRPC request
-        const request = try serializeCreateAccountRequest(name, passphrase);
-        defer std.heap.c_allocator.free(request);
+    pub fn broadcast_transaction(self: *Self, tx_data: []const u8, peers: []const []const u8) !void {
+        for (peers) |peer_addr| {
+            var connection = self.client.connect(peer_addr) catch |err| {
+                std.log.warn("Failed to connect to peer {s}: {}", .{ peer_addr, err });
+                continue;
+            };
 
-        // Send over QUIC
-        try self.client.sendData(self.connection.?, request);
-
-        // TODO: Read response
-        return "account_created";
+            connection.send(tx_data) catch |err| {
+                std.log.warn("Failed to send to peer {s}: {}", .{ peer_addr, err });
+                continue;
+            };
+        }
     }
 
     pub fn deinit(self: *Self) void {
         self.client.deinit();
     }
 };
+```
 
-// Usage
-pub fn main() !void {
-    var wallet_client = try WalletClient.init("127.0.0.1:9090");
-    defer wallet_client.deinit();
+## GhostBridge Cross-Chain Integration
 
-    const account_id = try wallet_client.createAccount("test_account", "secure_passphrase");
-    std.debug.print("Created account: {}\\n", .{account_id});
+**GhostBridge** provides ultra-fast cross-chain communication infrastructure with type-safe Rust implementation and FFI abstractions.
+### Cross-Chain Communication Pattern
+
+```rust
+// ghostbridge/src/cross_chain.rs
+use gquic::prelude::*;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossChainMessage {
+    pub source_chain: String,
+    pub target_chain: String,
+    pub message_type: MessageType,
+    pub payload: Vec<u8>,
+    pub nonce: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum MessageType {
+    Transfer,
+    ContractCall,
+    StateSync,
+    Bridge,
+}
+
+pub struct CrossChainBridge {
+    quic_client: QuicClient,
+    connection_pool: ConnectionPool,
+    chain_endpoints: HashMap<String, SocketAddr>,
+}
+
+impl CrossChainBridge {
+    pub async fn new() -> Result<Self> {
+        let config = QuicClientConfig::builder()
+            .server_name("bridge.ghostchain.network".to_string())
+            .with_alpn("cross-chain")
+            .with_alpn("bridge-v1")
+            .max_idle_timeout(120_000) // 2 minutes for cross-chain ops
+            .build();
+
+        let client = QuicClient::new(config)?;
+        let pool = ConnectionPool::new(PoolConfig::default());
+
+        Ok(Self {
+            quic_client: client,
+            connection_pool: pool,
+            chain_endpoints: HashMap::new(),
+        })
+    }
+
+    pub async fn register_chain(&mut self, chain_id: &str, endpoint: SocketAddr) -> Result<()> {
+        // Test connection to ensure chain is reachable
+        let connection = self.quic_client.connect(endpoint).await?;
+        self.connection_pool.return_connection(endpoint, connection).await;
+
+        self.chain_endpoints.insert(chain_id.to_string(), endpoint);
+        tracing::info!("Registered chain {} at {}", chain_id, endpoint);
+        Ok(())
+    }
+
+    pub async fn send_cross_chain_message(
+        &self,
+        message: CrossChainMessage,
+    ) -> Result<Vec<u8>> {
+        let target_endpoint = self.chain_endpoints
+            .get(&message.target_chain)
+            .ok_or_else(|| anyhow::anyhow!("Unknown target chain: {}", message.target_chain))?;
+
+        // Get or create connection to target chain
+        let connection = match self.connection_pool.get_connection(*target_endpoint).await {
+            Some(conn) => conn,
+            None => {
+                let conn = self.quic_client.connect(*target_endpoint).await?;
+                self.connection_pool.return_connection(*target_endpoint, conn.clone()).await;
+                conn
+            }
+        };
+
+        // Serialize and send message
+        let serialized = bincode::serialize(&message)?;
+        let mut stream = connection.open_bi().await?;
+
+        stream.write_all(&serialized).await?;
+        stream.finish().await?;
+
+        // Read response
+        let response = stream.read_to_end(1024 * 1024).await?; // 1MB max
+        Ok(response)
+    }
+}
+
+```
+
+## DNS over QUIC
+
+Modern DNS resolution with enhanced privacy and performance using QUIC transport.
+
+### Setting Up DNS over QUIC
+
+```rust
+// src/dns_quic.rs
+use gquic::prelude::*;
+
+pub struct DnsOverQuic {
+    client: QuicClient,
+    resolver_addr: SocketAddr,
+}
+
+impl DnsOverQuic {
+    pub async fn new(resolver: &str) -> Result<Self> {
+        let config = QuicClientConfig::builder()
+            .server_name("dns.ghostchain.network".to_string())
+            .with_alpn("doq") // DNS over QUIC
+            .max_idle_timeout(30_000)
+            .build();
+
+        let client = QuicClient::new(config)?;
+        let resolver_addr = resolver.parse()?;
+
+        Ok(Self { client, resolver_addr })
+    }
+
+    pub async fn resolve(&self, domain: &str, record_type: DnsRecordType) -> Result<Vec<String>> {
+        let connection = self.client.connect(self.resolver_addr).await?;
+        let mut stream = connection.open_bi().await?;
+
+        // Send DNS query
+        let query = DnsQuery::new(domain, record_type);
+        let query_bytes = query.serialize()?;
+
+        stream.write_all(&query_bytes).await?;
+        stream.finish().await?;
+
+        // Read DNS response
+        let response_bytes = stream.read_to_end(4096).await?;
+        let response = DnsResponse::parse(&response_bytes)?;
+
+        Ok(response.answers)
+    }
 }
 ```
 
-## Performance Considerations
+## Advanced Rust Integration
 
-### Connection Pooling for High Throughput
-
-```rust
-// High-performance setup
-let pool_config = PoolConfig::builder()
-    .max_connections_per_endpoint(100)     // Scale with server capacity
-    .max_connection_age(Duration::from_secs(3600))  // 1 hour
-    .max_idle_time(Duration::from_secs(300))        // 5 minutes
-    .enable_multiplexing(true)
-    .max_concurrent_streams(500)           // High concurrency
-    .build();
-
-let server_config = QuicServerConfig::builder()
-    .max_concurrent_bidi_streams(5000)     // Scale with hardware
-    .max_concurrent_uni_streams(5000)
-    .max_idle_timeout(Duration::from_secs(60))
-    .keep_alive_interval(Duration::from_secs(20))
-    .build()?;
-```
-
-### Monitoring and Metrics
+### Generic gRPC/QUIC Service Pattern
 
 ```rust
-#[cfg(feature = "metrics")]
+// Generic pattern for any Rust service with QUIC transport
+use gquic::prelude::*;
+use tonic::{Request, Response, Status};
+
+pub struct GenericQuicService<T> {
+    inner_service: T,
+    quic_server: QuicServer,
+}
+
+impl<T> GenericQuicService<T>
+where
+    T: Clone + Send + Sync + 'static,
 {
-    use gquic::metrics::get_metrics;
-    
-    // Periodic metrics reporting
-    tokio::spawn(async {
-        let mut interval = tokio::time::interval(Duration::from_secs(30));
-        
-        loop {
-            interval.tick().await;
-            let metrics = get_metrics().get_metrics().await;
-            
-            tracing::info!(
-                "QUIC metrics - Active: {}, Total: {}, Failed: {}, Latency: {:.2}ms",
-                metrics.connection.active_connections,
-                metrics.connection.total_connections,
-                metrics.connection.failed_connections,
-                metrics.connection.average_latency_ms
-            );
+    pub async fn new(service: T, bind_addr: SocketAddr) -> Result<Self> {
+        let handler = GrpcHandler::new(service.clone());
+
+        let server = QuicServer::builder()
+            .bind(bind_addr)
+            .with_self_signed_cert()? // Use proper certs in production
+            .with_alpn("grpc")
+            .with_alpn("h3")
+            .max_concurrent_bidi_streams(1000)
+            .build()?;
+
+        Ok(Self {
+            inner_service: service,
+            quic_server: server,
+        })
+    }
+
+    pub async fn serve(self) -> Result<()> {
+        tracing::info!("Starting QUIC service on {}", self.quic_server.local_addr());
+        self.quic_server.run().await
+    }
+}
+
+```
+
+## Complete GhostChain Ecosystem Integration
+
+The following projects can all leverage GQUIC for high-performance networking:
+
+### GhostChain Core Integration
+
+```rust
+// Integration with github.com/ghostkellz/ghostchain
+use gquic::prelude::*;
+
+pub struct GhostChainNode {
+    quic_transport: QuicP2PTransport,
+    validator: GhostChainValidator,
+}
+
+impl GhostChainNode {
+    pub async fn new(bind_addr: SocketAddr) -> Result<Self> {
+        let transport = QuicP2PTransport::new(bind_addr).await?;
+        let validator = GhostChainValidator::new();
+
+        Ok(Self {
+            quic_transport: transport,
+            validator,
+        })
+    }
+
+    pub async fn sync_with_network(&self) -> Result<()> {
+        // Use QUIC for fast blockchain sync
+        let peers = self.discover_peers().await?;
+
+        for peer in peers {
+            let latest_block = self.quic_transport.request_latest_block(peer).await?;
+            self.validator.validate_and_apply(latest_block).await?;
         }
-    });
+
+        Ok(())
+    }
 }
 ```
 
-### OS-Level Tuning
+### GCrypt Integration Pattern
+
+```rust
+// Integration with github.com/ghostkellz/gcrypt
+use gquic::crypto::CryptoBackend;
+use gcrypt::{Cipher, Hash, KeyDerivation};
+
+pub struct GCryptBackend {
+    inner: gcrypt::Backend,
+}
+
+impl CryptoBackend for GCryptBackend {
+    fn generate_keypair(&self, key_type: KeyType) -> Result<KeyPair> {
+        match key_type {
+            KeyType::Ed25519 => self.inner.generate_ed25519(),
+            KeyType::Secp256k1 => self.inner.generate_secp256k1(),
+            _ => Err(CryptoError::UnsupportedKeyType),
+        }
+    }
+
+    fn derive_shared_secret(&self, private_key: &PrivateKey, public_key: &PublicKey) -> Result<SharedSecret> {
+        self.inner.ecdh(private_key, public_key)
+    }
+}
+
+// Configure GQUIC to use GCrypt
+pub fn configure_gquic_with_gcrypt() -> Result<QuicClientConfig> {
+    let crypto_backend = GCryptBackend::new()?;
+
+    QuicClientConfig::builder()
+        .with_crypto_backend(Box::new(crypto_backend))
+        .with_alpn("ghostchain")
+        .build()
+}
+
+```
+
+## Production Deployment
+
+### Build Configuration
+
+```toml
+# Cargo.toml for production builds
+[dependencies]
+gquic = { git = "https://github.com/ghostkellz/gquic", features = ["gcc-crypto", "hardware-accel", "metrics"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+strip = false
+```
+
+### Cross-Platform Build Scripts
 
 ```bash
-# /etc/sysctl.conf
-net.core.rmem_max = 134217728
-net.core.wmem_max = 134217728
-net.core.rmem_default = 16777216
-net.core.wmem_default = 16777216
-net.ipv4.udp_mem = 102400 873800 16777216
-net.ipv4.udp_rmem_min = 8192
-net.ipv4.udp_wmem_min = 8192
+#!/bin/bash
+# build.sh - Universal build script
 
-# Apply changes
-sudo sysctl -p
+set -e
+
+# Detect platform
+OS=$(uname -s)
+ARCH=$(uname -m)
+
+echo "Building GQUIC for $OS/$ARCH"
+
+# Configure features based on platform
+case "$OS" in
+    Linux)
+        FEATURES="gcc-crypto,hardware-accel,rustls-tls"
+        TARGET_SUFFIX="linux"
+        ;;
+    Darwin)
+        FEATURES="ring-crypto,rustls-tls"
+        TARGET_SUFFIX="macos"
+        ;;
+    MINGW*|CYGWIN*|MSYS*)
+        FEATURES="ring-crypto,rustls-tls"
+        TARGET_SUFFIX="windows"
+        ;;
+    *)
+        echo "Unsupported OS: $OS"
+        exit 1
+        ;;
+esac
+
+# Build with FFI for Zig integration
+cargo build --release --features "ffi,$FEATURES"
+
+# Create distribution package
+mkdir -p dist/$TARGET_SUFFIX
+cp target/release/libgquic.* dist/$TARGET_SUFFIX/ 2>/dev/null || true
+cp include/gquic_ffi.h dist/$TARGET_SUFFIX/
+cp README.md dist/$TARGET_SUFFIX/
+
+echo "Build complete: dist/$TARGET_SUFFIX/"
 ```
 
-## Integration Checklist
+### Docker Integration
 
-### For Rust Projects
-- [ ] Add gquic dependency with appropriate features
-- [ ] Implement connection pooling for clients
-- [ ] Use appropriate ALPN protocols
-- [ ] Configure TLS certificates properly
-- [ ] Add metrics monitoring
-- [ ] Handle connection failures gracefully
+```dockerfile
+# Dockerfile.gquic
+FROM rust:1.75-slim as builder
 
-### For Zig Projects
-- [ ] Build gquic with FFI support
-- [ ] Create Zig bindings for required functions
-- [ ] Link against libgquic in build.zig
-- [ ] Handle C memory management properly
-- [ ] Test FFI integration thoroughly
+WORKDIR /build
+COPY . .
 
-### For gRPC Services
-- [ ] Define protobuf schemas
-- [ ] Implement gRPC-over-QUIC handlers
-- [ ] Configure ALPN for "grpc" protocol
-- [ ] Test with various gRPC clients
-- [ ] Monitor performance vs HTTP/2
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-### Production Deployment
-- [ ] Use proper TLS certificates
-- [ ] Configure firewalls for UDP traffic
-- [ ] Monitor connection metrics
-- [ ] Set up health checks
-- [ ] Configure log rotation
-- [ ] Plan for graceful shutdowns
+# Build with production features
+RUN cargo build --release --features "gcc-crypto,hardware-accel,metrics"
 
-## Troubleshooting
+# Runtime image
+FROM debian:bookworm-slim
 
-### Common Integration Issues
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-1. **FFI Compilation Errors**
-   ```bash
-   # Ensure proper feature flags
-   cargo build --release --features ffi
-   
-   # Check library output
-   ldd target/release/libgquic.so
+COPY --from=builder /build/target/release/libgquic.so /usr/local/lib/
+COPY --from=builder /build/include/gquic_ffi.h /usr/local/include/
+
+# Update library path
+RUN ldconfig
+
+EXPOSE 9090/udp
+
+# Default command for testing
+CMD ["echo", "GQUIC library ready"]
+```
+
+### Environment Configuration
+
+```bash
+# .env.production
+GQUIC_LOG_LEVEL=info
+GQUIC_BIND_ADDR=0.0.0.0:9090
+GQUIC_TLS_CERT_PATH=/etc/ssl/certs/gquic.crt
+GQUIC_TLS_KEY_PATH=/etc/ssl/private/gquic.key
+GQUIC_MAX_CONNECTIONS=10000
+GQUIC_CRYPTO_BACKEND=gcrypt
+GQUIC_HARDWARE_ACCEL=true
+```
+
+### Performance Tuning
+
+```rust
+// production_config.rs
+use gquic::prelude::*;
+
+pub fn production_server_config() -> Result<QuicServerConfig> {
+    QuicServerConfig::builder()
+        .max_concurrent_bidi_streams(5000)
+        .max_concurrent_uni_streams(5000)
+        .max_idle_timeout(Duration::from_secs(300))
+        .keep_alive_interval(Duration::from_secs(30))
+        .initial_rtt(Duration::from_millis(100))
+        .max_ack_delay(Duration::from_millis(25))
+        .ack_delay_exponent(3)
+        .max_udp_payload_size(1472) // Avoid fragmentation
+        .active_connection_id_limit(4)
+        .enable_0rtt(true)
+        .enable_migration(true)
+        .build()
+}
+
+pub fn production_client_config() -> Result<QuicClientConfig> {
+    QuicClientConfig::builder()
+        .max_idle_timeout(Duration::from_secs(60))
+        .keep_alive_interval(Duration::from_secs(20))
+        .max_concurrent_streams(1000)
+        .enable_0rtt(true)
+        .enable_migration(true)
+        .congestion_control(CongestionControl::Bbr)
+        .build()
+}
+```
+
+## Integration Summary
+
+### Quick Start Guide
+
+1. **Add GQUIC to your project:**
+   ```toml
+   [dependencies]
+   gquic = { git = "https://github.com/ghostkellz/gquic", features = ["gcc-crypto"] }
    ```
 
-2. **Connection Failures**
-   ```rust
-   // Add detailed error logging
-   match client.connect(addr).await {
-       Err(e) => {
-           tracing::error!("Connection failed: {}", e);
-           // Check network, firewall, certificates
-       }
-       Ok(conn) => { /* success */ }
-   }
-   ```
+2. **Choose your integration pattern:**
+   - **Rust projects**: Use native GQUIC APIs
+   - **Zig projects**: Use FFI bindings
+   - **Plugin systems**: Implement GQUIC network plugins
+   - **Cross-chain**: Use GQUIC for bridge communication
 
-3. **Performance Issues**
-   ```rust
-   // Monitor metrics
-   let metrics = get_metrics().get_metrics().await;
-   if metrics.connection.average_latency_ms > 100.0 {
-       tracing::warn!("High latency detected: {:.2}ms", 
-                     metrics.connection.average_latency_ms);
-   }
-   ```
+3. **Configure for your use case:**
+   - **Etherlink**: Secure Rust-Zig bridge communication
+   - **RVM**: VM networking with gas metering
+   - **GhostPlane**: L2 execution with mesh networking
+   - **GhostBridge**: Ultra-fast cross-chain transport
+   - **GhostChain**: P2P blockchain networking
+   - **GCrypt**: Advanced cryptographic backend
 
-For more detailed troubleshooting, see [DOCS.md](DOCS.md#troubleshooting).
+### Feature Selection Guide
+
+Choose the right features for your project:
+
+```toml
+# For Rust projects with GCrypt
+gquic = { git = "https://github.com/ghostkellz/gquic", features = ["gcc-crypto", "metrics"] }
+
+# For Zig FFI integration
+gquic = { git = "https://github.com/ghostkellz/gquic", features = ["ffi", "ring-crypto"] }
+
+# For production deployment
+gquic = { git = "https://github.com/ghostkellz/gquic", features = ["gcc-crypto", "hardware-accel", "metrics"] }
+
+# For maximum compatibility
+gquic = { git = "https://github.com/ghostkellz/gquic", features = ["ring-crypto", "rustls-tls"] }
+```
+
+### Integration Checklist
+
+**For Rust Projects:**
+- ✅ Add GQUIC with appropriate features
+- ✅ Configure ALPN protocols for your service
+- ✅ Implement connection pooling for performance
+- ✅ Set up proper TLS certificates
+- ✅ Add metrics monitoring
+- ✅ Handle errors gracefully
+
+**For Zig Projects:**
+- ✅ Build GQUIC with FFI support
+- ✅ Create Zig bindings using provided patterns
+- ✅ Link against libgquic in build.zig
+- ✅ Handle C memory management safely
+- ✅ Test FFI integration thoroughly
+
+**For All Projects:**
+- ✅ Configure firewall for UDP traffic
+- ✅ Set up monitoring and logging
+- ✅ Plan for graceful shutdowns
+- ✅ Test with realistic network conditions
+- ✅ Document integration patterns for your team
+
+## Next Steps
+
+### Community and Support
+
+- **Documentation**: See [DOCS.md](DOCS.md) for detailed API documentation
+- **Examples**: Check the `examples/` directory for complete working examples
+- **Issues**: Report bugs and feature requests on [GitHub Issues](https://github.com/ghostkellz/gquic/issues)
+- **Discussions**: Join the community discussions for questions and best practices
+
+### Related Projects
+
+The complete GhostChain ecosystem:
+
+| Project | Language | Purpose |
+|---------|----------|---------|
+| [GQUIC](https://github.com/ghostkellz/gquic) | Rust | High-performance QUIC networking library |
+| [Etherlink](https://github.com/ghostkellz/etherlink) | Rust | Secure Rust-Zig bridge communication |
+| [RVM](https://github.com/ghostkellz/rvm) | Rust | Modular virtual machine with networking plugins |
+| [GhostPlane](https://github.com/ghostkellz/ghostplane) | Zig + Rust | Layer 2 execution engine with mesh networking |
+| [GhostBridge](https://github.com/ghostkellz/ghostbridge) | Rust | Ultra-fast cross-chain communication infrastructure |
+| [GhostChain](https://github.com/ghostkellz/ghostchain) | Rust | Core blockchain implementation |
+| [GCrypt](https://github.com/ghostkellz/gcrypt) | Rust | Advanced cryptographic backend |
 
 ---
 
-This integration guide provides the foundation for connecting your GhostChain ecosystem projects with high-performance QUIC transport. Start with the basic examples and scale up based on your specific requirements.
+**Ready to integrate GQUIC into your project?** Start with the [Quick Start Guide](#integration-summary) above and choose the pattern that fits your architecture. For production deployments, follow the [build configuration](#production-deployment) and [performance tuning](#performance-tuning) guidelines.
+
+This integration guide provides the foundation for building high-performance, secure networking in the modern blockchain ecosystem. Scale up based on your specific requirements and don't hesitate to contribute improvements back to the community.
