@@ -12,6 +12,14 @@
   🚀 **The Ultimate Rust QUIC Library for All Use Cases** 🚀
 </div>
 
+## DISCLAIMER
+
+⚠️ **EXPERIMENTAL LIBRARY - FOR LAB/PERSONAL USE** ⚠️
+
+This is an experimental library under active development. It is
+intended for research, learning, and personal projects. The API is subject
+to change!
+
 ---
 
 ## 🎯 **Mission: Replace Quinn + Quiche + Add Enterprise Features**
